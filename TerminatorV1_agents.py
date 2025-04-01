@@ -185,7 +185,13 @@ async def security_guardrail(
         r'dir ',
         r'find ',
         r'open.*file',
-        r'read.*file'
+        r'read.*file',
+        r'edit.*file',
+        r'modify.*file',
+        r'change.*file',
+        r'update.*code',
+        r'edit.*current.*file',
+        r'update.*current.*file'
     ]
     
     # Check if input matches any safe pattern
@@ -465,6 +471,13 @@ async def read_file(ctx: RunContextWrapper[AgentContext], file_path: str) -> str
         # Track file access in context
         ctx.context.track_file_access(file_path)
         ctx.context.set_operation(f"Read file: {os.path.basename(file_path)}")
+        
+        # Trigger summarization if token threshold is reached
+        if needs_summary:
+            logger.info(f"Token threshold reached ({ctx.context.token_count}/{ctx.context.max_tokens}), triggering summarization")
+            # Call the summarize_context function
+            await summarize_context(ctx)
+            logger.info(f"Context summarized, new token count: {ctx.context.token_count}")
         
         return content
     except Exception as e:
@@ -1119,6 +1132,51 @@ async def write_to_file(
         return message
     except Exception as e:
         return f"Error writing to file: {str(e)}"
+        
+@function_tool
+async def edit_current_file(
+    ctx: RunContextWrapper[AgentContext], 
+    content: str,
+    show_diff: bool = True
+) -> str:
+    """
+    Edit the file that's currently open in the editor.
+    Shows a diff view for the user to review and approve changes.
+    
+    Args:
+        content: New content for the file
+        show_diff: Whether to show diff view (True) or apply directly (False)
+        
+    Returns:
+        A message indicating success or failure
+    """
+    try:
+        app = ctx.app
+        
+        # Check if there's a file open in the editor
+        if not hasattr(app, 'current_file') or not app.current_file:
+            return "Error: No file is currently open in the editor"
+        
+        current_file = app.current_file
+        
+        # Get current content from the editor
+        editor = app.query_one(f"#{app.active_editor}")
+        original_content = editor.text
+        
+        # Track file access and operation in context
+        ctx.context.track_file_access(current_file)
+        ctx.context.set_operation(f"Edited current file: {os.path.basename(current_file)}")
+        
+        if show_diff:
+            # Create a diff and show it to the user
+            app.show_code_suggestion(original_content, content, f"AI suggested changes for {os.path.basename(current_file)}")
+            return f"Showing diff for {os.path.basename(current_file)}. User will need to approve changes."
+        else:
+            # Apply changes directly
+            app.apply_diff_changes(content)
+            return f"Changes applied to {os.path.basename(current_file)}"
+    except Exception as e:
+        return f"Error editing current file: {str(e)}"
 
 @function_tool
 async def execute_python(
@@ -1282,14 +1340,75 @@ async def summarize_context(ctx: RunContextWrapper[AgentContext]) -> str:
     Returns:
         A confirmation message after summarizing.
     """
-    # This would normally use an LLM to summarize, but for simplicity
-    # we'll just simulate this process
+    try:
+        logger.info(f"Summarizing context with token count: {ctx.context.token_count}")
+        
+        # Create a structured summary of recent operations
+        summary = {
+            "accessed_files": ctx.context.accessed_files[-10:],  # Keep last 10 files
+            "executed_commands": ctx.context.executed_commands[-10:], # Keep last 10 commands
+            "last_operation": ctx.context.last_operation,
+            "session_id": ctx.context.session_id,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        # Use OpenAI to create a more natural language summary
+        try:
+            # Create a summary using OpenAI
+            client = OpenAI()
+            
+            # Create the prompt for summarization
+            prompt = f"""
+            Please summarize the following context from a development session:
+            
+            Files accessed: {', '.join(summary['accessed_files']) if summary['accessed_files'] else 'None'}
+            Commands executed: {', '.join(summary['executed_commands']) if summary['executed_commands'] else 'None'}
+            Last operation: {summary['last_operation'] or 'None'}
+            
+            Previous context summary:
+            {ctx.context.history_summary or 'No previous summary'}
+            
+            Generate a concise summary (3-5 sentences) that preserves the most important context information.
+            Focus on key files accessed, commands executed, and general operations performed.
+            """
+            
+            # Call the API to generate a summary
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a context summarization assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300,
+                temperature=0.7,
+            )
+            
+            # Extract the summary from the response
+            ai_summary = response.choices[0].message.content.strip()
+            
+            # Update the context's history summary with the new summary
+            ctx.context.history_summary = ai_summary
+            logger.info(f"Generated AI summary: {ai_summary[:100]}...")
+            
+        except Exception as e:
+            # Fallback to a basic summary if OpenAI API fails
+            logger.error(f"Error generating summary with OpenAI: {str(e)}", exc_info=True)
+            ctx.context.history_summary += f"\n[Session {ctx.context.session_id} - {time.strftime('%Y-%m-%d %H:%M:%S')}] "
+            ctx.context.history_summary += f"Accessed {len(summary['accessed_files'])} files. "
+            ctx.context.history_summary += f"Executed {len(summary['executed_commands'])} commands. "
+            ctx.context.history_summary += f"Last operation: {summary['last_operation'] or 'None'}."
+            
+        # Reset token count after summarization
+        ctx.context.reset_token_count()
+        
+        return "Context summarized successfully. The conversation will continue with the summarized context."
     
-    # Reset token count after summarization
-    ctx.context.reset_token_count()
-    ctx.context.history_summary += f"[Context window reached {ctx.context.max_tokens} tokens and was summarized]"
-    
-    return "Context summarized successfully. The conversation will continue with the summarized context."
+    except Exception as e:
+        logger.error(f"Error in summarize_context: {str(e)}", exc_info=True)
+        # Ensure token count is reset even if summarization fails
+        ctx.context.reset_token_count()
+        ctx.context.history_summary += f"[Context window reached {ctx.context.max_tokens} tokens and was summarized with an error: {str(e)}]"
+        return f"Context summarization encountered an error: {str(e)}, but token count was reset."
 
 # Define agents for specific tasks
 # 1. Code Generation Agent
@@ -1432,6 +1551,14 @@ def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Age
     accessed_files = ", ".join(ctx.context.accessed_files[-5:]) if ctx.context.accessed_files else "None yet"
     executed_commands = ", ".join(ctx.context.executed_commands[-5:]) if ctx.context.executed_commands else "None yet"
     
+    # Include history summary if available
+    history_context = ""
+    if ctx.context.history_summary:
+        history_context = f"""
+    Previous Context Summary:
+    {ctx.context.history_summary}
+    """
+    
     return f"""You are a Terminal Agent for macOS and Linux, an expert coding assistant designed to help with 
     Python development tasks. You can navigate the file system, read and analyze code, execute Python code, 
     and provide expert assistance with coding tasks.
@@ -1451,11 +1578,17 @@ def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Age
     4. Code Generation and Execution: Write code to files and execute Python code
     5. Code Comparison and Diff: Compare files or content and display differences with side-by-side highlighting
     6. Context Management: Maintain conversation context even for long sessions
+    7. Editor Integration: Edit the file currently open in the editor with the edit_current_file function
     
     When searching for files or directories:
     - If not found in the current directory, try parent directories
     - Use search_project_directories for a comprehensive search
     - For recursive searches, make sure to explicitly set recursive=True
+    
+    When editing files:
+    - Use edit_current_file() to modify the file currently open in the editor
+    - The function shows a diff view for the user to review changes before applying them
+    - Set show_diff=False to apply changes directly without user confirmation (use with caution)
     
     You can also delegate tasks to specialized agents when needed:
     - Code Generator: For writing Python code
@@ -1463,7 +1596,7 @@ def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Age
     - Project Analyzer: For analyzing project structure
     - Data Science Code Generator: For generating data science code
     - Web Development Code Generator: For generating web application code
-    
+    {history_context}
     Current working directory: {ctx.context.current_dir}
     Current session ID: {ctx.context.session_id}
     Last operation: {ctx.context.last_operation or "None"}
@@ -1476,6 +1609,8 @@ def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Age
     3. Suggest best practices and improvements
     4. Explain your reasoning
     5. Be aware of the limitations of the tools
+    6. Use edit_current_file() when suggesting changes to the file currently open in the editor
+    7. Always show a diff view for the user to review changes unless explicitly asked not to
     
     You must return your response as a structured output with:
     - Python code always in triple backticks ```python ...```
@@ -1504,6 +1639,7 @@ terminal_agent = Agent[AgentContext](
         git_status,
         git_commit,
         write_to_file,
+        edit_current_file,  # Edit the file currently open in the editor
         execute_python,
         summarize_context,
         # Add specialized agents as tools
@@ -1593,6 +1729,26 @@ async def run_agent_query(
                 "error": f"Current directory doesn't exist: {context.current_dir}",
                 "response": "I couldn't process that request because the working directory doesn't exist."
             }
+            
+        # Check if token count is close to limit and trigger summarization if needed
+        # We're using 80% of max_tokens as a threshold to trigger summarization proactively
+        # before processing a new query
+        summarization_threshold = int(context.max_tokens * 0.8)
+        if context.token_count >= summarization_threshold:
+            logger.info(f"Token count ({context.token_count}) exceeds threshold ({summarization_threshold}), summarizing before processing query")
+            
+            # Create a wrapper for the context
+            ctx_wrapper = RunContextWrapper(context=context)
+            
+            # Call summarize_context function
+            await summarize_context(ctx_wrapper)
+            
+            logger.info(f"Context summarized before processing query, new token count: {context.token_count}")
+            
+        # Add the query to token count (approximate)
+        query_tokens = len(query.split())
+        context.update_token_count(query_tokens)
+        logger.info(f"Added {query_tokens} tokens for query, total: {context.token_count}")
         
         # Set up run config
         run_config = RunConfig(

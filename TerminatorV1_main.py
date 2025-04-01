@@ -17,6 +17,7 @@ from rich.syntax import Syntax
 # Textual imports
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.events import MouseDown, MouseUp, MouseMove
 from textual.widgets import (
     Header, Footer, Static, Button, Input, TextArea, Tree, DirectoryTree,
     Label, Markdown, LoadingIndicator, TabbedContent, TabPane
@@ -41,12 +42,19 @@ from TerminatorV1_tools import (
 
 # Git Commit Dialog Screen
 class CommitDialog(ModalScreen):
-    """Git commit dialog screen"""
+    """Git commit dialog screen with Escape key support"""
+    
+    # Add key bindings for the dialog
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
     
     def compose(self) -> ComposeResult:
         """Create the dialog layout"""
         with Container(id="commit-dialog"):
-            yield Label("Commit Message", classes="title")
+            with Horizontal(id="commit-header"):
+                yield Label("Commit Message", classes="title")
+                yield Label("Press ESC to cancel", classes="escape-hint")
             yield TextArea(language="text", id="commit-message")
             with Horizontal():
                 yield Button("Cancel", id="cancel-commit", variant="error")
@@ -66,6 +74,17 @@ class CommitDialog(ModalScreen):
             # Trigger the commit and close the dialog
             self.app.git_commit(commit_message)
             self.app.pop_screen()
+            
+    async def action_cancel(self) -> None:
+        """Cancel the commit dialog (called when ESC is pressed)"""
+        self.app.pop_screen()
+        
+    async def on_key(self, event) -> None:
+        """Handle key presses in the dialog"""
+        # If the Escape key was already handled by bindings, we don't need to do anything
+        # This is a fallback in case the binding doesn't work
+        if event.key == "escape":
+            await self.action_cancel()
 
 # Code Analysis Dialog
 class CodeAnalysisDialog(ModalScreen):
@@ -111,6 +130,175 @@ class ThemeSelectionScreen(ModalScreen):
             theme_name = button_id[6:]  # Remove "theme-" prefix
             self.app.set_editor_theme(theme_name)
             self.app.pop_screen()
+
+class DiffViewScreen(ModalScreen):
+    """Modal screen for displaying code diffs"""
+    
+    def __init__(self, 
+                 original_content: str, 
+                 modified_content: str, 
+                 title: str = "Code Changes",
+                 original_title: str = "Original",
+                 modified_title: str = "Modified",
+                 highlight_language: str = "python"):
+        """
+        Initialize the diff view screen
+        
+        Args:
+            original_content: Original content
+            modified_content: Modified content
+            title: Title of the diff view
+            original_title: Title for the original content panel
+            modified_title: Title for the modified content panel
+            highlight_language: Language for syntax highlighting
+        """
+        super().__init__()
+        self.original_content = original_content
+        self.modified_content = modified_content
+        self.screen_title = title
+        self.original_title = original_title
+        self.modified_title = modified_title
+        self.language = highlight_language
+        
+        # Calculate the diff
+        self.unified_diff = CodeAnalyzer.create_diff(original_content, modified_content)
+        
+        # Extract line changes from diff
+        self.changed_lines = self._extract_line_changes(self.unified_diff)
+    
+    def _extract_line_changes(self, diff_text):
+        """
+        Extract line numbers that were added or removed in the diff
+        
+        Args:
+            diff_text: The unified diff text
+            
+        Returns:
+            Dictionary with original and modified line numbers that changed
+        """
+        original_changes = set()
+        modified_changes = set()
+        
+        current_original_line = 0
+        current_modified_line = 0
+        
+        for line in diff_text.splitlines():
+            # Check if this is a hunk header line (e.g., @@ -1,7 +1,9 @@)
+            if line.startswith("@@"):
+                # Extract line numbers from the hunk header
+                # Format is @@ -original_start,original_count +modified_start,modified_count @@
+                match = re.search(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+                if match:
+                    current_original_line = int(match.group(1)) - 1  # Adjust to 0-based indexing
+                    current_modified_line = int(match.group(2)) - 1  # Adjust to 0-based indexing
+            elif line.startswith("-"):
+                original_changes.add(current_original_line)
+                current_original_line += 1
+            elif line.startswith("+"):
+                modified_changes.add(current_modified_line)
+                current_modified_line += 1
+            else:
+                # Context line or other (moves both counters)
+                current_original_line += 1
+                current_modified_line += 1
+        
+        return {
+            "original": original_changes,
+            "modified": modified_changes
+        }
+        
+    def compose(self) -> ComposeResult:
+        """Create the diff view layout"""
+        yield Label(self.screen_title, id="diff-title", classes="title")
+        
+        with Container(id="diff-view-container"):
+            with Horizontal(id="diff-split-view"):
+                # Left panel: Original code
+                with Vertical(id="diff-original-panel"):
+                    yield Label(self.original_title, classes="subtitle")
+                    # Use TextArea with line numbers for original content
+                    original_editor = yield TextArea(
+                        language=self.language,
+                        theme="monokai",
+                        show_line_numbers=True,
+                        read_only=True,
+                        id="diff-original-content"
+                    )
+                    original_editor.text = self.original_content
+                
+                # Right panel: Modified code
+                with Vertical(id="diff-modified-panel"):
+                    yield Label(self.modified_title, classes="subtitle")
+                    # Use TextArea with line numbers for modified content
+                    modified_editor = yield TextArea(
+                        language=self.language,
+                        theme="monokai",
+                        show_line_numbers=True,
+                        read_only=True,
+                        id="diff-modified-content"
+                    )
+                    modified_editor.text = self.modified_content
+            
+            # Bottom panel: Unified diff view (optional, can be toggled)
+            with Vertical(id="unified-diff-panel", classes="hidden"):
+                yield Label("Unified Diff View", classes="subtitle")
+                diff_editor = yield TextArea(
+                    language="diff",
+                    theme="monokai",
+                    show_line_numbers=True,
+                    read_only=True,
+                    id="unified-diff-content"
+                )
+                diff_editor.text = self.unified_diff
+            
+            with Horizontal(id="diff-buttons"):
+                yield Button("Apply Changes", id="apply-diff", variant="success")
+                yield Button("Toggle Unified View", id="toggle-unified-view")
+                yield Button("Close", id="close-diff", variant="error")
+    
+    def on_mount(self) -> None:
+        """Called when the screen is mounted"""
+        # Apply custom CSS classes to highlight changed lines
+        self._highlight_changes()
+    
+    def _highlight_changes(self) -> None:
+        """Highlight the lines that have changed in both panels"""
+        # This is a basic implementation - for a production app, 
+        # you would use proper CSS styling to highlight changes
+        try:
+            # Create CSS for highlighting original lines that were changed
+            original_editor = self.query_one("#diff-original-content")
+            for line_num in self.changed_lines["original"]:
+                # Apply highlighting to the lines that were changed in the original
+                pass  # This would require custom rendering in a full implementation
+            
+            # Create CSS for highlighting modified lines that were changed    
+            modified_editor = self.query_one("#diff-modified-content")
+            for line_num in self.changed_lines["modified"]:
+                # Apply highlighting to the lines that were changed in the modified
+                pass  # This would require custom rendering in a full implementation
+        
+        except Exception as e:
+            logging.error(f"Error highlighting changes: {str(e)}", exc_info=True)
+    
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses"""
+        button_id = event.button.id
+        
+        if button_id == "close-diff":
+            # Close without applying changes
+            self.app.pop_screen()
+        elif button_id == "apply-diff":
+            # Apply the changes and close
+            self.app.apply_diff_changes(self.modified_content)
+            self.app.pop_screen()
+        elif button_id == "toggle-unified-view":
+            # Toggle visibility of unified diff panel
+            unified_panel = self.query_one("#unified-diff-panel")
+            if "hidden" in unified_panel.classes:
+                unified_panel.remove_class("hidden")
+            else:
+                unified_panel.add_class("hidden")
 # Debugger Screen
 class DebuggerScreen(Screen):
     """Debugger interface screen"""
@@ -1126,17 +1314,46 @@ class TerminatorApp(App):
             self.analysis_result = analysis_result
             super().__init__()
     
-    # In the CSS section of your TerminatorApp class, replace:
+    # CSS section for the app
     
     CSS = """
+        /* Panel layout */
+        #main-layout {
+            height: 100%;
+        }
+        
         #sidebar {
             width: 20%;
             min-width: 20;
+            max-width: 40%;
             background: $surface-darken-1;
         }
         
         #editor-container {
-            width: 50%;
+            width: 60%;
+            min-width: 30%;
+            max-width: 80%;
+        }
+        
+        #ai-panel {
+            width: 20%;
+            min-width: 15%;
+            max-width: 40%;
+        }
+        
+        /* Gutter styles for resizing */
+        .gutter {
+            width: 1;
+            background: $accent-darken-2;
+            color: $text-muted;
+            cursor: col-resize;
+            text-align: center;
+            transition: background 0.1s;
+        }
+        
+        .gutter:hover {
+            background: $accent;
+            color: $text;
         }
         
         /* Real-time Collaboration Styles */
@@ -1510,6 +1727,123 @@ class TerminatorApp(App):
             color: $error;
         }
         
+        /* Diff view styling */
+        #diff-view-container {
+            background: $surface;
+            padding: 1;
+            border: solid $primary;
+            height: 90%;
+            width: 95%;
+            margin: 1 2;
+        }
+        
+        #diff-split-view {
+            height: 80%;
+            margin-bottom: 1;
+        }
+        
+        #diff-original-panel {
+            width: 50%;
+            height: 100%;
+            border-right: solid $primary;
+            padding-right: 1;
+        }
+        
+        #diff-modified-panel {
+            width: 50%;
+            height: 100%;
+            padding-left: 1;
+        }
+        
+        #unified-diff-panel {
+            height: 30%;
+            margin-top: 1;
+            border-top: solid $primary;
+            padding-top: 1;
+        }
+        
+        #diff-buttons {
+            margin-top: 1;
+            height: 3;
+            align: center middle;
+        }
+        
+        #diff-original-content .line-deleted {
+            background: rgba(255, 0, 0, 0.2);
+            text-decoration: line-through;
+        }
+        
+        #diff-modified-content .line-added {
+            background: rgba(0, 255, 0, 0.2);
+            font-weight: bold;
+        }
+        
+        #diff-title {
+            text-align: center;
+            background: $primary;
+            color: $text;
+            margin-bottom: 1;
+        }
+        
+        .subtitle {
+            background: $primary-darken-2;
+            color: $text;
+            text-align: center;
+            margin-bottom: 1;
+        }
+        
+        /* Git commit dialog styling */
+        #commit-header {
+            width: 100%;
+            margin-bottom: 1;
+        }
+        
+        .escape-hint {
+            color: $text-muted;
+            text-align: right;
+            padding-right: 1;
+            width: 50%;
+        }
+        
+        /* Resizable panel styling */
+        #main-layout {
+            width: 100%;
+            height: 100%;
+        }
+        
+        #sidebar {
+            width: 20%;
+            min-width: 10%;
+            max-width: 40%;
+        }
+        
+        #editor-container {
+            width: 60%;
+            min-width: 30%;
+            max-width: 80%;
+        }
+        
+        #ai-panel {
+            width: 20%;
+            min-width: 10%;
+            max-width: 40%;
+        }
+        
+        .panel {
+            overflow: auto;
+        }
+        
+        .gutter {
+            background: $primary;
+            color: $text;
+            width: 1;
+            cursor: col-resize;
+            text-align: center;
+            user-select: none;
+            margin: 0 1;
+        }
+        }
+        
         .search-no-results {
             text-align: center;
             margin-top: 2;
@@ -1610,7 +1944,6 @@ class TerminatorApp(App):
     _status_update_debounce = 0.5  # seconds
 
     # Define screens
-    # Define screens
     SCREENS = {
         "commit": CommitDialog,
         "analysis": CodeAnalysisDialog,
@@ -1619,16 +1952,19 @@ class TerminatorApp(App):
         "branch_visualization": BranchVisualizationScreen,
         "remote_connection": RemoteConnectionDialog,
         "remote_browser": RemoteFilesBrowser,
-        "theme_selection": ThemeSelectionScreen
+        "theme_selection": ThemeSelectionScreen,
+        "diff_view": DiffViewScreen
     }
 
     def compose(self) -> ComposeResult:
-        """Create the UI layout"""
+        """Create the UI layout with resizable panels"""
         yield Header()
         
-        with Horizontal():
-            # Left sidebar with file explorer and git status
-            with Vertical(id="sidebar"):
+        # Main layout with resizable panels using the gutter parameter
+        # This horizontal container will have resizable children
+        with Horizontal(id="main-layout"):
+            # Left sidebar with file explorer and git status - initially 20% width
+            with Vertical(id="sidebar", classes="panel"):
                 yield Label("File Explorer", classes="title")
                 yield DirectoryTree(".", id="file-explorer")
                 
@@ -1641,11 +1977,12 @@ class TerminatorApp(App):
                         yield Button("Push", id="push-btn")
                         yield Button("Branches", id="branches-btn")
             
-            # Center code editor and terminal
-            with Vertical(id="editor-container"):
+            # Resizer element between sidebar and editor
+            yield Static("|", classes="gutter")
+            
+            # Center code editor and terminal - initially 60% width
+            with Vertical(id="editor-container", classes="panel"):
                 # Use TabPane directly instead of add_pane method
-                # Fix the missing parenthesis error around line 1586
-                # Replace lines 1584-1588 with this:
                 with TabbedContent(id="editor-tabs"):
                     with TabPane("Editor", id="editor-tab-pane"):
                         yield Static(id="editor-tab")
@@ -1704,8 +2041,11 @@ class TerminatorApp(App):
                         yield Button("Execute", id="terminal-execute-btn")
                         yield Button("Remote", id="open-remote-btn")
             
-            # Right AI panel
-            with Vertical(id="ai-panel"):
+            # Resizer element between editor and AI panel
+            yield Static("|", classes="gutter")
+            
+            # Right AI panel - initially 20% width
+            with Vertical(id="ai-panel", classes="panel"):
                 yield Label("AI Assistant", classes="title")
                 yield Markdown("Welcome to Terminator v1! Ask me anything about your code.", id="ai-output")
                 with Vertical(id="ai-input"):
@@ -1758,6 +2098,149 @@ class TerminatorApp(App):
             self.notify(f"Theme changed to: {theme_name}", severity="information")
         except Exception as e:
             self.notify(f"Error setting theme: {str(e)}", severity="error")
+            
+    def show_diff_view(self, original_content: str, modified_content: str, 
+                     title: str = "Code Changes", language: str = "python",
+                     original_title: str = "Original", modified_title: str = "Modified") -> None:
+        """
+        Show the diff view popup for comparing original and modified content
+        
+        Args:
+            original_content: The original content
+            modified_content: The modified content
+            title: Title for the diff view
+            language: Language for syntax highlighting
+            original_title: Title for the original content panel
+            modified_title: Title for the modified content panel
+        """
+        try:
+            # Create a diff view screen with the provided content
+            diff_screen = DiffViewScreen(
+                original_content=original_content,
+                modified_content=modified_content,
+                title=title,
+                original_title=original_title,
+                modified_title=modified_title,
+                highlight_language=language
+            )
+            
+            # Push the screen
+            self.push_screen(diff_screen)
+            
+        except Exception as e:
+            self.notify(f"Error showing diff view: {str(e)}", severity="error")
+            logging.error(f"Error showing diff view: {str(e)}", exc_info=True)
+            
+    def show_code_suggestion(self, original_content: str, new_content: str, title: str = "AI Suggested Changes") -> None:
+        """
+        Show code suggestions from the AI agent with a diff view
+        
+        Args:
+            original_content: The original file content
+            new_content: The suggested new content
+            title: Title for the diff view popup
+        """
+        try:
+            # Create a callback that will be called when the user clicks "Apply Changes"
+            def on_apply_callback(content):
+                self.apply_diff_changes(content)
+            
+            # Create a diff view screen with the provided content
+            diff_screen = DiffViewScreen(
+                original_content=original_content,
+                modified_content=new_content,
+                title=title,
+                original_title="Current Code",
+                modified_title="AI Suggestion",
+                highlight_language=self._get_language_from_filename(self.current_file) if self.current_file else "python",
+                on_apply_callback=on_apply_callback
+            )
+            
+            # Push the screen
+            self.push_screen(diff_screen)
+            
+            # Show a notification about the suggestion
+            self.notify("AI has suggested changes. Review and apply if desired.", severity="information")
+            
+        except Exception as e:
+            self.notify(f"Error showing code suggestion: {str(e)}", severity="error")
+            logging.error(f"Error showing code suggestion: {str(e)}", exc_info=True)
+    
+    def _get_language_from_filename(self, filename: str) -> str:
+        """
+        Get the language for syntax highlighting based on file extension
+        
+        Args:
+            filename: The filename to check
+            
+        Returns:
+            Language identifier for syntax highlighting
+        """
+        if not filename:
+            return "python"
+            
+        ext = os.path.splitext(filename)[1].lower()
+        
+        language_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".jsx": "javascript",
+            ".tsx": "typescript",
+            ".html": "html",
+            ".css": "css",
+            ".json": "json",
+            ".md": "markdown",
+            ".xml": "xml",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".sh": "bash",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".java": "java",
+            ".go": "go",
+            ".rs": "rust"
+        }
+        
+        return language_map.get(ext, "python")
+            
+    def apply_diff_changes(self, new_content: str) -> None:
+        """
+        Apply changes from diff view to the current file
+        
+        Args:
+            new_content: The new content to apply
+        """
+        if not self.current_file:
+            self.notify("No file selected to save changes to", severity="error")
+            return
+            
+        try:
+            # Get the active editor
+            if self.active_editor == "primary":
+                editor = self.query_one("#editor-primary")
+            else:
+                editor = self.query_one("#editor-secondary")
+                
+            # Update the editor content
+            if hasattr(editor, "load_text"):
+                editor.load_text(new_content)
+            else:
+                editor.text = new_content
+                
+            # Save the changes to the file
+            with open(self.current_file, "w", encoding="utf-8") as file:
+                file.write(new_content)
+                
+            self.notify(f"Changes applied and saved to {os.path.basename(self.current_file)}", severity="success")
+            
+            # Update git status if applicable
+            if hasattr(self, "git_repository") and self.git_repository:
+                asyncio.create_task(self.update_git_status())
+                
+        except Exception as e:
+            self.notify(f"Error applying changes: {str(e)}", severity="error")
+            logging.error(f"Error applying changes: {str(e)}", exc_info=True)
     
     def ensure_syntax_dependencies(self):
         """Ensure the syntax highlighting dependencies are installed"""
@@ -1816,6 +2299,16 @@ class TerminatorApp(App):
         self.terminal_history = []
         # Note: self.current_theme is already initialized as a reactive attribute
         
+        # Initialize resizable panel tracking
+        self.resizing = False
+        self.resizing_panel = None
+        self.start_x = 0
+        self.current_widths = {
+            "sidebar": 20,           # Default sidebar width 20%
+            "editor-container": 60,  # Default editor width 60%
+            "ai-panel": 20           # Default AI panel width 20%
+        }
+        
         # Check for syntax highlighting dependencies
         self.ensure_syntax_dependencies()
         
@@ -1871,6 +2364,9 @@ class TerminatorApp(App):
 
         # Initialize AI panel
         self.initialize_ai_panel()
+        
+        # Apply initial panel widths
+        self._apply_panel_widths()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission events for all inputs in the app"""
@@ -1904,6 +2400,142 @@ class TerminatorApp(App):
             self.git_repository = None
             git_output = self.query_one("#git-output")
             git_output.update("No Git repository found")
+    
+    def _apply_panel_widths(self):
+        """Apply the current panel widths to the UI"""
+        try:
+            # Apply widths to each panel
+            sidebar = self.query_one("#sidebar")
+            editor = self.query_one("#editor-container")
+            ai_panel = self.query_one("#ai-panel")
+            
+            sidebar.styles.width = f"{self.current_widths['sidebar']}%"
+            editor.styles.width = f"{self.current_widths['editor-container']}%"
+            ai_panel.styles.width = f"{self.current_widths['ai-panel']}%"
+        except Exception as e:
+            logging.error(f"Error applying panel widths: {str(e)}", exc_info=True)
+    
+    async def on_static_click(self, event: Static.Clicked) -> None:
+        """Handle click events on static elements, including gutters"""
+        if event.static.has_class("gutter"):
+            # Determine which panel is being resized
+            if event.static.query_one("#sidebar", default=None) is not None:
+                self.resizing_panel = "sidebar"
+            elif event.static.query_one("#editor-container", default=None) is not None:
+                self.resizing_panel = "editor-container"
+            else:
+                self.resizing_panel = None
+                return
+            
+            # Start resizing
+            self.resizing = True
+            self.start_x = event.screen_x
+    
+    async def on_mouse_down(self, event: MouseDown) -> None:
+        """Handle mouse down events for gutter resizing"""
+        # Check if we clicked on a gutter element
+        target = self.get_widget_at(event.screen_x, event.screen_y)
+        
+        if target and isinstance(target, Static) and target.has_class("gutter"):
+            # Find the adjacent panels for this gutter
+            gutter_idx = list(self.query(".gutter")).index(target)
+            
+            if gutter_idx == 0:
+                # First gutter - between sidebar and editor
+                self.resizing_panel = "sidebar"
+            elif gutter_idx == 1:
+                # Second gutter - between editor and AI panel
+                self.resizing_panel = "editor-container"
+            
+            # Start resizing
+            self.resizing = True
+            self.start_x = event.screen_x
+            
+            # Capture the mouse to receive events outside the gutter
+            self.capture_mouse()
+    
+    async def on_mouse_up(self, event: MouseUp) -> None:
+        """Handle mouse up events to stop resizing"""
+        if self.resizing:
+            self.resizing = False
+            self.resizing_panel = None
+            
+            # Release the mouse capture
+            self.release_mouse()
+    
+    async def on_mouse_move(self, event: MouseMove) -> None:
+        """Handle mouse move events for panel resizing"""
+        if not self.resizing or not self.resizing_panel:
+            return
+            
+        # Calculate movement
+        delta_x = event.screen_x - self.start_x
+        if delta_x == 0:
+            return
+            
+        # Convert to percentage of total width based on app width
+        app_width = self.size.width
+        delta_percent = (delta_x / app_width) * 100
+        
+        # Update panel widths with constraints
+        if self.resizing_panel == "sidebar":
+            # Resizing sidebar affects editor width
+            new_sidebar_width = self.current_widths["sidebar"] + delta_percent
+            new_editor_width = self.current_widths["editor-container"] - delta_percent
+            
+            # Apply constraints
+            if 10 <= new_sidebar_width <= 40 and 30 <= new_editor_width <= 80:
+                self.current_widths["sidebar"] = new_sidebar_width
+                self.current_widths["editor-container"] = new_editor_width
+                
+                # Apply new widths
+                sidebar = self.query_one("#sidebar")
+                editor = self.query_one("#editor-container")
+                sidebar.styles.width = f"{new_sidebar_width}%"
+                editor.styles.width = f"{new_editor_width}%"
+                
+        elif self.resizing_panel == "editor-container":
+            # Resizing editor affects AI panel width
+            new_editor_width = self.current_widths["editor-container"] + delta_percent
+            new_ai_width = self.current_widths["ai-panel"] - delta_percent
+            
+            # Apply constraints
+            if 30 <= new_editor_width <= 80 and 15 <= new_ai_width <= 40:
+                self.current_widths["editor-container"] = new_editor_width
+                self.current_widths["ai-panel"] = new_ai_width
+                
+                # Apply new widths
+                editor = self.query_one("#editor-container")
+                ai_panel = self.query_one("#ai-panel")
+                editor.styles.width = f"{new_editor_width}%"
+                ai_panel.styles.width = f"{new_ai_width}%"
+        
+        # Update the start position for the next move
+        self.start_x = event.screen_x
+    
+    def get_widget_at(self, x: int, y: int):
+        """
+        Get the widget at a specific screen coordinate
+        
+        Args:
+            x: The x screen coordinate
+            y: The y screen coordinate
+            
+        Returns:
+            The widget at the given coordinates, or None if no widget is found
+        """
+        # Convert screen coordinates to app coordinates
+        app_x = x 
+        app_y = y
+        
+        # Find the widget at the given position
+        for widget in self.query("*"):
+            # Get widget's region
+            region = widget.region
+            if region and region.contains(app_x, app_y):
+                return widget
+        
+        return None
 
     def initialize_ai_panel(self):
         """Initialize AI panel elements"""
@@ -2010,43 +2642,79 @@ class TerminatorApp(App):
     
     async def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected):
         """Handle file selection in the directory tree"""
-        # Store the path
-        self.current_file = event.path
-    
-        # Update window title
-        self.title = f"Terminator - {event.path}"
-    
-        # Load the file content
         try:
-            with open(event.path, "r", encoding="utf-8") as file:
+            # Safely extract the path using proper error handling
+            path = getattr(event, "path", None)
+            if not path:
+                # Try to access path through event.node.data (for newer Textual versions)
+                node = getattr(event, "node", None)
+                if node:
+                    path = getattr(node, "data", None)
+                    
+            # If still no path, use event as fallback (some Textual versions pass path directly)
+            if not path and isinstance(event, (str, Path)):
+                path = str(event)
+                
+            # Last resort - try to get path from the message itself
+            if not path and hasattr(event, "_Message__data"):
+                data = getattr(event, "_Message__data", {})
+                path = data.get("path", None)
+                
+            if not path:
+                raise ValueError("Could not determine file path from event")
+                
+            # Store the path and update window title
+            self.current_file = path
+            self.title = f"Terminator - {path}"
+            
+            # Load the file content
+            with open(path, "r", encoding="utf-8") as file:
                 content = file.read()
-            
+                
             # Get file extension for language detection
-            extension = os.path.splitext(event.path)[1].lower()
+            extension = os.path.splitext(path)[1].lower()
             language = self.get_language_from_extension(extension)
-            
+                
             # Update the active editor
             if self.active_editor == "primary":
                 editor = self.query_one("#editor-primary")
             else:
                 editor = self.query_one("#editor-secondary")
-            
+                
             # Set the language and content
             editor.language = language
-            editor.load_text(content)  # Use load_text instead of direct text assignment
-        
+            
+            # Use load_text if available (newer Textual versions)
+            if hasattr(editor, "load_text"):
+                editor.load_text(content)
+            else:
+                # Fallback to direct text assignment
+                editor.text = content
+            
             # Apply the current theme
             if hasattr(self, "current_theme"):
                 editor.theme = self.current_theme
-        
+            elif hasattr(self, "editor_theme"):
+                editor.theme = self.editor_theme
+            
             # Focus the editor
             editor.focus()
-        
+            
+            # Add the file to recent files list if we maintain one
+            if hasattr(self, "recent_files") and isinstance(self.recent_files, list):
+                if path in self.recent_files:
+                    self.recent_files.remove(path)
+                self.recent_files.insert(0, path)
+                # Keep list at reasonable size
+                self.recent_files = self.recent_files[:10]
+            
             # Notify about the detected language
             self.notify(f"File opened with {language} highlighting", severity="information")
-        
+            
         except Exception as e:
-            self.notify(f"Error opening file: {str(e)}", severity="error")
+            error_msg = str(e)
+            logging.error(f"Error opening file: {error_msg}", exc_info=True)
+            self.notify(f"Error opening file: {error_msg}", severity="error")
             
     async def toggle_split_view(self):
         """Toggle split view mode"""
@@ -2270,9 +2938,213 @@ class TerminatorApp(App):
 
             # Add the response and update the markdown
             ai_output.update(f"{current_content}{response}")
+            
+            # Check for code edits in the response
+            self._check_for_code_suggestions(response)
+            
         except Exception as e:
             self.notify(f"Error updating AI output: {str(e)}", severity="error")
             logging.error(f"Error updating AI output: {str(e)}", exc_info=True)
+            
+    # Panel resizing functionality
+    def on_mount(self) -> None:
+        """Called when the app is mounted"""
+        super().on_mount()
+        # Initialize panel resizing state
+        self.resizing = False
+        self.resizing_panel = None
+        self.start_x = 0
+        self.current_widths = {}
+        
+        # Store initial panel widths
+        self.current_widths["sidebar"] = 20
+        self.current_widths["editor-container"] = 60
+        self.current_widths["ai-panel"] = 20
+        
+    async def on_mouse_down(self, event) -> None:
+        """Handle mouse down events for panel resizing"""
+        # Check if we clicked on a gutter element
+        target = event.target
+        if isinstance(target, Static) and "gutter" in target.classes:
+            self.resizing = True
+            self.start_x = event.screen_x
+            
+            # Identify which panel is being resized
+            sidebar = self.query_one("#sidebar")
+            editor = self.query_one("#editor-container")
+            ai_panel = self.query_one("#ai-panel")
+            
+            gutters = self.query(".gutter")
+            gutter_index = list(gutters).index(target)
+            
+            if gutter_index == 0:  # First gutter (between sidebar and editor)
+                self.resizing_panel = "sidebar"
+                self.affected_panel = "editor-container"
+            else:  # Second gutter (between editor and AI panel)
+                self.resizing_panel = "editor-container"
+                self.affected_panel = "ai-panel"
+                
+            # Set the cursor to indicate resizing
+            event.prevent_default()
+            
+    async def on_mouse_up(self, event) -> None:
+        """Handle mouse up events to end panel resizing"""
+        if self.resizing:
+            self.resizing = False
+            self.resizing_panel = None
+            
+    async def on_mouse_move(self, event) -> None:
+        """Handle mouse move events for panel resizing"""
+        if not self.resizing or not self.resizing_panel:
+            return
+            
+        # Calculate movement
+        delta_x = event.screen_x - self.start_x
+        if delta_x == 0:
+            return
+            
+        # Convert to percentage of total width based on app width
+        app_width = self.size.width
+        delta_percent = (delta_x / app_width) * 100
+        
+        # Update panel widths with constraints
+        if self.resizing_panel == "sidebar":
+            # Resizing sidebar affects editor width
+            new_sidebar_width = self.current_widths["sidebar"] + delta_percent
+            new_editor_width = self.current_widths["editor-container"] - delta_percent
+            
+            # Apply constraints
+            if 10 <= new_sidebar_width <= 40 and 30 <= new_editor_width <= 80:
+                self.current_widths["sidebar"] = new_sidebar_width
+                self.current_widths["editor-container"] = new_editor_width
+                
+                # Apply new widths
+                sidebar = self.query_one("#sidebar")
+                editor = self.query_one("#editor-container")
+                sidebar.styles.width = f"{new_sidebar_width}%"
+                editor.styles.width = f"{new_editor_width}%"
+                
+        elif self.resizing_panel == "editor-container":
+            # Resizing editor affects AI panel width
+            new_editor_width = self.current_widths["editor-container"] + delta_percent
+            new_ai_width = self.current_widths["ai-panel"] - delta_percent
+            
+            # Apply constraints
+            if 30 <= new_editor_width <= 80 and 10 <= new_ai_width <= 40:
+                self.current_widths["editor-container"] = new_editor_width
+                self.current_widths["ai-panel"] = new_ai_width
+                
+                # Apply new widths
+                editor = self.query_one("#editor-container")
+                ai_panel = self.query_one("#ai-panel")
+                editor.styles.width = f"{new_editor_width}%"
+                ai_panel.styles.width = f"{new_ai_width}%"
+                
+        # Update start position for next movement
+        self.start_x = event.screen_x
+            
+    def _check_for_code_suggestions(self, response):
+        """
+        Check if the AI response contains code suggestions and offer to show diff
+        
+        Args:
+            response: The AI response text
+        """
+        try:
+            # Only proceed if we have an active file
+            if not self.current_file:
+                return
+                
+            # Get the active editor content for comparison
+            if self.active_editor == "primary":
+                editor = self.query_one("#editor-primary")
+            else:
+                editor = self.query_one("#editor-secondary")
+                
+            current_content = editor.text
+            
+            # Check if the response contains code blocks
+            code_blocks = re.findall(r'```(\w*)\n(.*?)```', response, re.DOTALL)
+            
+            if code_blocks:
+                # Find the first Python code block that's a significant edit
+                for lang, code in code_blocks:
+                    # Skip if not Python code or if it's just a short snippet
+                    if lang.lower() not in ['python', 'py'] or len(code.strip()) < 10:
+                        continue
+                        
+                    # Skip if the code is too different from the current file
+                    # This is a simple heuristic to avoid comparing unrelated code
+                    if len(current_content) > 0 and len(code) > 0:
+                        # If the suggested code is less than 20% similar to current content,
+                        # it's probably unrelated
+                        similarity = difflib.SequenceMatcher(None, current_content, code).ratio()
+                        if similarity < 0.2:
+                            continue
+                    
+                    # Calculate how different the code is
+                    diff = CodeAnalyzer.create_diff(current_content, code)
+                    
+                    # If there are actual differences, offer to preview and apply them
+                    if diff and '+' in diff and '-' in diff:
+                        # Start a background task to show a notification with action buttons
+                        asyncio.create_task(self._show_code_suggestion_notification(current_content, code))
+                        break
+                        
+        except Exception as e:
+            logging.error(f"Error checking for code suggestions: {str(e)}", exc_info=True)
+            
+    async def _show_code_suggestion_notification(self, current_content, suggested_code):
+        """
+        Show notification for code suggestions with action buttons
+        
+        Args:
+            current_content: Current file content
+            suggested_code: Suggested code from AI
+        """
+        # Slight delay to ensure notification appears after the main response
+        await asyncio.sleep(0.5)
+        
+        # Create a notification with action buttons
+        extension = os.path.splitext(self.current_file)[1].lower()
+        language = self.get_language_from_extension(extension)
+        
+        from textual.notifications import Notification
+        
+        class CodeSuggestionNotification(Notification):
+            def __init__(self, app, current, suggested):
+                self.app = app
+                self.current = current
+                self.suggested = suggested
+                super().__init__(
+                    title="AI Code Suggestion",
+                    message="The AI has suggested code changes. Would you like to view them?",
+                    timeout=20
+                )
+                
+            def on_button_pressed(self, event):
+                button_id = event.button.id
+                if button_id == "view-diff":
+                    self.app.show_diff_view(
+                        self.current, 
+                        self.suggested,
+                        title="AI Suggested Changes", 
+                        language=language
+                    )
+                elif button_id == "apply-directly":
+                    self.app.apply_diff_changes(self.suggested)
+                    
+            def compose(self):
+                yield from super().compose()
+                with self.content:
+                    yield Button("View Changes", id="view-diff", variant="primary")
+                    yield Button("Apply Directly", id="apply-directly", variant="warning")
+                    
+        # Show the custom notification
+        self.notify(
+            CodeSuggestionNotification(self, current_content, suggested_code),
+            severity="information"
+        )
 
     # Handle tab changes
     async def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
