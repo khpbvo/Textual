@@ -11,6 +11,7 @@
 # .txt files
 *.txt
 # ds_store files
-.DS_Store
+*.DS_Store
 # __pycache__ folders
 __pycache__/
+.DS_Store
