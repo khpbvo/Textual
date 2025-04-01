@@ -1,0 +1,12 @@
+/Imacvenv
+/venv
+
+## python source code
+*.pyc
+
+# logs
+*.log
+# .md files
+*.md
+# .txt files
+*.txt
