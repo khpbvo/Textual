@@ -1346,7 +1346,6 @@ class TerminatorApp(App):
             width: 1;
             background: $accent-darken-2;
             color: $text-muted;
-            cursor: col-resize;
             text-align: center;
             transition: background 0.1s;
         }
@@ -1770,12 +1769,12 @@ class TerminatorApp(App):
         
         #diff-original-content .line-deleted {
             background: rgba(255, 0, 0, 0.2);
-            text-decoration: line-through;
+            color: $error;
         }
         
         #diff-modified-content .line-added {
             background: rgba(0, 255, 0, 0.2);
-            font-weight: bold;
+            color: $success;
         }
         
         #diff-title {
@@ -1837,13 +1836,10 @@ class TerminatorApp(App):
             background: $primary;
             color: $text;
             width: 1;
-            cursor: col-resize;
             text-align: center;
-            user-select: none;
             margin: 0 1;
         }
-        }
-        
+                
         .search-no-results {
             text-align: center;
             margin-top: 2;
@@ -2100,8 +2096,8 @@ class TerminatorApp(App):
             self.notify(f"Error setting theme: {str(e)}", severity="error")
             
     def show_diff_view(self, original_content: str, modified_content: str, 
-                     title: str = "Code Changes", language: str = "python",
-                     original_title: str = "Original", modified_title: str = "Modified") -> None:
+                    title: str = "Code Changes", language: str = "python",
+                    original_title: str = "Original", modified_title: str = "Modified") -> None:
         """
         Show the diff view popup for comparing original and modified content
         
@@ -2297,7 +2293,6 @@ class TerminatorApp(App):
         self.multi_cursor_positions = []
         self.active_tab = "editor"
         self.terminal_history = []
-        # Note: self.current_theme is already initialized as a reactive attribute
         
         # Initialize resizable panel tracking
         self.resizing = False
@@ -2361,7 +2356,7 @@ class TerminatorApp(App):
         
         # Check for git repository
         self.check_git_repository()
-
+    
         # Initialize AI panel
         self.initialize_ai_panel()
         
@@ -2415,7 +2410,7 @@ class TerminatorApp(App):
         except Exception as e:
             logging.error(f"Error applying panel widths: {str(e)}", exc_info=True)
     
-    async def on_static_click(self, event: Static.Clicked) -> None:
+    async def on_static_click(self, event) -> None:
         """Handle click events on static elements, including gutters"""
         if event.static.has_class("gutter"):
             # Determine which panel is being resized
@@ -2530,12 +2525,14 @@ class TerminatorApp(App):
         
         # Find the widget at the given position
         for widget in self.query("*"):
-            # Get widget's region
+        # Get widget's region
             region = widget.region
             if region and region.contains(app_x, app_y):
-                return widget
-        
-        return None
+            # Calculate offset within the widget
+                offset = (app_x - region.x, app_y - region.y)
+                return widget, offset
+    
+        return None, (0, 0)
 
     def initialize_ai_panel(self):
         """Initialize AI panel elements"""
@@ -2946,43 +2943,30 @@ class TerminatorApp(App):
             self.notify(f"Error updating AI output: {str(e)}", severity="error")
             logging.error(f"Error updating AI output: {str(e)}", exc_info=True)
             
-    # Panel resizing functionality
-    def on_mount(self) -> None:
-        """Called when the app is mounted"""
-        super().on_mount()
-        # Initialize panel resizing state
-        self.resizing = False
-        self.resizing_panel = None
-        self.start_x = 0
-        self.current_widths = {}
+
         
-        # Store initial panel widths
-        self.current_widths["sidebar"] = 20
-        self.current_widths["editor-container"] = 60
-        self.current_widths["ai-panel"] = 20
-        
-    async def on_mouse_down(self, event) -> None:
-        """Handle mouse down events for panel resizing"""
+    async def on_mouse_down(self, event: MouseDown) -> None:
+        """Handle mouse down events for gutter resizing"""
         # Check if we clicked on a gutter element
-        target = event.target
-        if isinstance(target, Static) and "gutter" in target.classes:
+        target, _ = self.get_widget_at(event.screen_x, event.screen_y)
+        
+        if target and isinstance(target, Static) and target.has_class("gutter"):
+            # Find the adjacent panels for this gutter
+            gutter_idx = list(self.query(".gutter")).index(target)
+            
+            if gutter_idx == 0:
+                # First gutter - between sidebar and editor
+                self.resizing_panel = "sidebar"
+            elif gutter_idx == 1:
+                # Second gutter - between editor and AI panel
+                self.resizing_panel = "editor-container"
+            
+            # Start resizing
             self.resizing = True
             self.start_x = event.screen_x
             
-            # Identify which panel is being resized
-            sidebar = self.query_one("#sidebar")
-            editor = self.query_one("#editor-container")
-            ai_panel = self.query_one("#ai-panel")
-            
-            gutters = self.query(".gutter")
-            gutter_index = list(gutters).index(target)
-            
-            if gutter_index == 0:  # First gutter (between sidebar and editor)
-                self.resizing_panel = "sidebar"
-                self.affected_panel = "editor-container"
-            else:  # Second gutter (between editor and AI panel)
-                self.resizing_panel = "editor-container"
-                self.affected_panel = "ai-panel"
+            # Capture the mouse to receive events outside the gutter
+            self.capture_mouse()
                 
             # Set the cursor to indicate resizing
             event.prevent_default()

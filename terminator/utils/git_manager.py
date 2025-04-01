@@ -6,7 +6,12 @@ import os
 import subprocess
 from typing import Tuple, Dict, List, Any, Optional
 import logging
-
+from textual.screen import Screen, ModalScreen
+from textual.app import App, ComposeResult
+from textual.widgets import (
+    Header, Footer, Static, Button, Input, TextArea, Tree, DirectoryTree,
+    Label, Markdown, LoadingIndicator, TabbedContent, TabPane
+)
 class GitManager:
     """Class to manage Git operations for the Terminator IDE"""
     

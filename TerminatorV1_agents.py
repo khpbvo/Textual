@@ -327,6 +327,7 @@ async def find_file(
     Returns:
         Path to the file if found, or error message
     """
+    # Handle default inside function
     if recursive is None:
         recursive = True
         
@@ -1137,7 +1138,7 @@ async def write_to_file(
 async def edit_current_file(
     ctx: RunContextWrapper[AgentContext], 
     content: str,
-    show_diff: bool = True
+    show_diff: Optional[bool] = None
 ) -> str:
     """
     Edit the file that's currently open in the editor.
@@ -1151,6 +1152,10 @@ async def edit_current_file(
         A message indicating success or failure
     """
     try:
+        # Handle default value inside function
+        if show_diff is None:
+            show_diff = True
+            
         app = ctx.app
         
         # Check if there's a file open in the editor

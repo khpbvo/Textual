@@ -8,6 +8,7 @@ import asyncio
 import logging
 import uuid
 from typing import Dict, List, Any, Optional, Set, Tuple, Union, Callable
+from typing import Dict, List, Any, Optional, Set, Tuple, Union, Callable, Awaitable
 
 from .session import (
     SessionManager,

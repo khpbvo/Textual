@@ -86,13 +86,13 @@ class DiffViewScreen(ModalScreen):
     show_unified = reactive(False)
     
     def __init__(self, 
-                 original_content: str, 
-                 modified_content: str, 
-                 title: str = "Code Changes",
-                 original_title: str = "Original",
-                 modified_title: str = "Modified",
-                 highlight_language: str = "python",
-                 on_apply_callback = None):
+                original_content: str, 
+                modified_content: str, 
+                title: str = "Code Changes",
+                original_title: str = "Original",
+                modified_title: str = "Modified",
+                highlight_language: str = "python",
+                on_apply_callback = None):
         """
         Initialize the diff view screen
         
