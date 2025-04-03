@@ -14,6 +14,7 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from terminator.ui.panels import ResizablePanelsMixin, PANEL_CSS
 # Textual imports
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
@@ -1436,7 +1437,7 @@ class CommandPalette(ModalScreen):
 
 
 # Main application class
-class TerminatorApp(App):
+class TerminatorApp(App, ResizablePanelsMixin):
     """
     Terminator - A terminal-based Python IDE with AI superpowers
     """
@@ -1480,14 +1481,17 @@ class TerminatorApp(App):
         .gutter {
             width: 1;
             background: $accent-darken-2;
-            color: $text-muted;
+            color: $text;
             text-align: center;
-            transition: background 0.1s;
+            margin: 0;
+            height: 100%;
+            min-width: 3;
         }
         
         .gutter:hover {
             background: $accent;
             color: $text;
+            min-width: 3;
         }
         
         /* Real-time Collaboration Styles */
@@ -2109,7 +2113,7 @@ class TerminatorApp(App):
                         yield Button("Branches", id="branches-btn")
 
             # Resizer element between sidebar and editor
-            yield Static("|", classes="gutter")
+            yield Static("║", classes="gutter")
 
             # Center code editor and terminal - initially 60% width
             with Vertical(id="editor-container", classes="panel"):
@@ -2187,7 +2191,7 @@ class TerminatorApp(App):
                         yield Button("Remote", id="open-remote-btn")
 
             # Resizer element between editor and AI panel
-            yield Static("|", classes="gutter")
+            yield Static("║", classes="gutter")
 
             # Right AI panel - initially 20% width
             with Vertical(id="ai-panel", classes="panel"):
@@ -2261,7 +2265,7 @@ class TerminatorApp(App):
     ) -> None:
         """
         Show the diff view popup for comparing original and modified content
-
+    
         Args:
             original_content: The original content
             modified_content: The modified content
@@ -2273,9 +2277,10 @@ class TerminatorApp(App):
         try:
             # Create a wrapper function for the async callback
             async def apply_callback(content):
+                # Use our async diff apply function
                 await self.apply_diff_changes(content)
-
-            # Create the diff screen with the async callback
+                
+            # Create the diff screen with our async callback
             diff_screen = DiffViewScreen(
                 original_content=original_content,
                 modified_content=modified_content,
@@ -2283,15 +2288,25 @@ class TerminatorApp(App):
                 original_title=original_title,
                 modified_title=modified_title,
                 highlight_language=language,
-                on_apply_callback=apply_callback,  # Pass the async wrapper
+                on_apply_callback=apply_callback  # Pass our async wrapper function
             )
-
-            # Push the screen
+            
+            # Log that we're showing the diff view for debugging
+            logging.info(f"Showing diff view: {title} (content length: {len(modified_content)})")
+            
+            # Push the screen to display it
             self.push_screen(diff_screen)
-
+            
+            # Show a notification to ensure the user knows what happened
+            self.notify(
+                "Showing diff view. Review and apply changes if needed.",
+                severity="information"
+            )
+    
         except Exception as e:
-            self.notify(f"Error showing diff view: {str(e)}", severity="error")
+            # Log the error and notify the user
             logging.error(f"Error showing diff view: {str(e)}", exc_info=True)
+            self.notify(f"Error showing diff view: {str(e)}", severity="error")
 
     def show_code_suggestion(
         self,
@@ -2492,6 +2507,7 @@ class TerminatorApp(App):
         self.terminal_history = []
 
         # Initialize resizable panel tracking
+        self.initialize_resizable_panels()
         self.resizing = False
         self.resizing_panel = None
         self.start_x = 0
@@ -2627,86 +2643,19 @@ class TerminatorApp(App):
             self.start_x = event.screen_x
 
     async def on_mouse_down(self, event: MouseDown) -> None:
-        """Handle mouse down events for gutter resizing"""
-        # Check if we clicked on a gutter element
-        target = self.get_widget_at(event.screen_x, event.screen_y)
-
-        if target and isinstance(target, Static) and target.has_class("gutter"):
-            # Find the adjacent panels for this gutter
-            gutter_idx = list(self.query(".gutter")).index(target)
-
-            if gutter_idx == 0:
-                # First gutter - between sidebar and editor
-                self.resizing_panel = "sidebar"
-            elif gutter_idx == 1:
-                # Second gutter - between editor and AI panel
-                self.resizing_panel = "editor-container"
-
-            # Start resizing
-            self.resizing = True
-            self.start_x = event.screen_x
-
-            # Capture the mouse to receive events outside the gutter
-            self.capture_mouse()
-
+        """Handle mouse down events"""
+        # Call the mixin's handler for gutter resizing
+        await self.handle_gutter_mouse_down(event)
+    
     async def on_mouse_up(self, event: MouseUp) -> None:
-        """Handle mouse up events to stop resizing"""
-        if self.resizing:
-            self.resizing = False
-            self.resizing_panel = None
-
-            # Release the mouse capture
-            self.release_mouse()
-
+        """Handle mouse up events"""
+        # Call the mixin's handler for stopping resizing
+        await self.handle_gutter_mouse_up(event)
+    
     async def on_mouse_move(self, event: MouseMove) -> None:
-        """Handle mouse move events for panel resizing"""
-        if not self.resizing or not self.resizing_panel:
-            return
-
-        # Calculate movement
-        delta_x = event.screen_x - self.start_x
-        if delta_x == 0:
-            return
-
-        # Convert to percentage of total width based on app width
-        app_width = self.size.width
-        delta_percent = (delta_x / app_width) * 100
-
-        # Update panel widths with constraints
-        if self.resizing_panel == "sidebar":
-            # Resizing sidebar affects editor width
-            new_sidebar_width = self.current_widths["sidebar"] + delta_percent
-            new_editor_width = self.current_widths["editor-container"] - delta_percent
-
-            # Apply constraints
-            if 10 <= new_sidebar_width <= 40 and 30 <= new_editor_width <= 80:
-                self.current_widths["sidebar"] = new_sidebar_width
-                self.current_widths["editor-container"] = new_editor_width
-
-                # Apply new widths
-                sidebar = self.query_one("#sidebar")
-                editor = self.query_one("#editor-container")
-                sidebar.styles.width = f"{new_sidebar_width}%"
-                editor.styles.width = f"{new_editor_width}%"
-
-        elif self.resizing_panel == "editor-container":
-            # Resizing editor affects AI panel width
-            new_editor_width = self.current_widths["editor-container"] + delta_percent
-            new_ai_width = self.current_widths["ai-panel"] - delta_percent
-
-            # Apply constraints
-            if 30 <= new_editor_width <= 80 and 15 <= new_ai_width <= 40:
-                self.current_widths["editor-container"] = new_editor_width
-                self.current_widths["ai-panel"] = new_ai_width
-
-                # Apply new widths
-                editor = self.query_one("#editor-container")
-                ai_panel = self.query_one("#ai-panel")
-                editor.styles.width = f"{new_editor_width}%"
-                ai_panel.styles.width = f"{new_ai_width}%"
-
-        # Update the start position for the next move
-        self.start_x = event.screen_x
+        """Handle mouse move events"""
+        # Call the mixin's handler for panel resizing
+        await self.handle_gutter_mouse_move(event)
 
     def get_widget_at(self, x: int, y: int):
         """
@@ -3255,57 +3204,76 @@ class TerminatorApp(App):
     def _check_for_code_suggestions(self, response):
         """
         Check if the AI response contains code suggestions and offer to show diff
-
+    
         Args:
             response: The AI response text
         """
         try:
             # Only proceed if we have an active file
             if not self.current_file:
+                logging.info("No current file, skipping code suggestion check")
                 return
-
+    
             # Get the active editor content for comparison
             if self.active_editor == "primary":
                 editor = self.query_one("#editor-primary")
             else:
                 editor = self.query_one("#editor-secondary")
-
+    
             current_content = editor.text
-
+    
             # Check if the response contains code blocks
+            # Match both ```language and ``` without language
             code_blocks = re.findall(r"```(\w*)\n(.*?)```", response, re.DOTALL)
-
+            
+            # Log what we found for debugging
+            logging.info(f"Found {len(code_blocks)} code blocks in response")
+    
             if code_blocks:
-                # Find the first Python code block that's a significant edit
+                # Find the most relevant code block
+                most_relevant_code = None
+                highest_similarity = 0
+    
                 for lang, code in code_blocks:
-                    # Skip if not Python code or if it's just a short snippet
-                    if lang.lower() not in ["python", "py"] or len(code.strip()) < 10:
+                    # Skip non-code or empty blocks
+                    if not code.strip():
                         continue
-
-                    # Skip if the code is too different from the current file
-                    # This is a simple heuristic to avoid comparing unrelated code
-                    if len(current_content) > 0 and len(code) > 0:
-                        # If the suggested code is less than 20% similar to current content,
-                        # it's probably unrelated
-                        similarity = difflib.SequenceMatcher(
-                            None, current_content, code
-                        ).ratio()
-                        if similarity < 0.2:
-                            continue
-
-                    # Calculate how different the code is
-                    diff = CodeAnalyzer.create_diff(current_content, code)
-
-                    # If there are actual differences, offer to preview and apply them
-                    if diff and "+" in diff and "-" in diff:
-                        # Start a background task to show a notification with action buttons
-                        asyncio.create_task(
-                            self._show_code_suggestion_notification(
-                                current_content, code
-                            )
-                        )
-                        break
-
+                        
+                    # Only accept python or empty language
+                    lang = lang.lower()
+                    if lang and lang not in ["python", "py", ""]:
+                        logging.info(f"Skipping non-Python code block: {lang}")
+                        continue
+                    
+                    # Clean up the code
+                    cleaned_code = code.strip()
+                    
+                    # Calculate similarity with current content
+                    similarity = difflib.SequenceMatcher(
+                        None, current_content, cleaned_code
+                    ).ratio()
+                    
+                    logging.info(f"Code block similarity: {similarity:.2f}")
+                    
+                    if similarity > highest_similarity:
+                        highest_similarity = similarity
+                        most_relevant_code = cleaned_code
+                
+                # Lower threshold - we want to show more diff views
+                if most_relevant_code and highest_similarity < 0.95 and highest_similarity > 0.01:
+                    # Log that we're showing a suggestion
+                    logging.info(f"Showing code suggestion with similarity: {highest_similarity:.2f}")
+                    
+                    # Show the code suggestion with diff view
+                    self.show_code_suggestion(
+                        current_content, 
+                        most_relevant_code,
+                        f"AI Suggested Changes for {os.path.basename(self.current_file)}"
+                    )
+                    # Force update to ensure the diff shows
+                    self.refresh()
+                else:
+                    logging.info(f"Not showing code suggestion: similarity={highest_similarity:.2f}")
         except Exception as e:
             logging.error(
                 f"Error checking for code suggestions: {str(e)}", exc_info=True

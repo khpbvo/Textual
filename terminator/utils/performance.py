@@ -123,7 +123,7 @@ class PerformanceOptimizer:
         
         Args:
             namespace: Optional namespace to clear (function qualified name)
-                      If None, clear the entire cache
+                    If None, clear the entire cache
         """
         if namespace:
             if namespace in PerformanceOptimizer._cache:
@@ -324,3 +324,21 @@ class TimingProfiler:
                     }
         
         return stats
+    
+    @staticmethod
+    def optimize_api_requests():
+        """Apply optimizations for API requests"""
+        # Configure connection pooling and keepalive
+        import httpx
+        
+        # Create and return a transport with optimized pooling
+        return httpx.HTTPTransport(
+            # Increase pool limits
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0
+            ),
+            # Configure proxy if needed
+            # proxy=httpx.Proxy(...) 
+        )

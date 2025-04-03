@@ -2,7 +2,6 @@
 TerminatorV1 Agents - Agent integration for the Terminator IDE
 Provides OpenAI agent-based code assistance, analysis, and generation
 """
-
 import os
 import sys
 import asyncio
@@ -14,8 +13,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Union, Tuple
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
-
+import httpx
 # Import OpenAI and agent framework
+import openai
 from openai import OpenAI
 from agents import (
     Agent,
@@ -48,11 +48,29 @@ handler = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 
 # Set API key from environment
 OpenAI.api_key = os.getenv("OPENAI_API_KEY")
 set_default_openai_key(os.getenv("OPENAI_API_KEY"))
+
+# Global clients for OpenAI
+_openai_client = None
+_async_openai_client = None
+
+def set_openai_clients(client, async_client):
+    """Set global OpenAI clients with custom configurations"""
+    global _openai_client, _async_openai_client
+    _openai_client = client
+    _async_openai_client = async_client
+
+def get_openai_client():
+    """Get the configured OpenAI client"""
+    return _openai_client
+
+def get_async_openai_client():
+    """Get the configured async OpenAI client"""
+    return _async_openai_client
 
 # Define security guardrail for malicious inputs
 class SecurityCheckOutput(BaseModel):
@@ -1540,7 +1558,6 @@ project_analysis_agent = Agent(
 )
 
 # Define dynamic instructions function for terminal agent
-# Define dynamic instructions function for terminal agent
 def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Agent[AgentContext]) -> str:
     """
     Dynamic instructions for terminal agent that incorporates context information.
@@ -1590,10 +1607,22 @@ def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Age
     - Use search_project_directories for a comprehensive search
     - For recursive searches, make sure to explicitly set recursive=True
     
-    When editing files:
-    - Use edit_current_file() to modify the file currently open in the editor
-    - The function shows a diff view for the user to review changes before applying them
-    - Set show_diff=False to apply changes directly without user confirmation (use with caution)
+    IMPORTANT - ALWAYS USE ONE OF THESE TWO METHODS WHEN SUGGESTING CODE CHANGES:
+    
+    1. For direct file modifications, use the edit_current_file() tool function:
+        ```python
+        await edit_current_file(content="complete updated file content goes here", show_diff=True)
+        ```
+        This will automatically show a diff view to the user before applying changes.
+    
+    2. For code examples or partial changes, wrap ALL code in triple backticks:
+        ```python
+        def example_function():
+            return "This is an example"
+        ```
+        The system will automatically detect these code blocks and offer to show them in a diff view.
+    
+    NEVER simply paste code without using one of these two methods, as the user will not see the diff view.
     
     You can also delegate tasks to specialized agents when needed:
     - Code Generator: For writing Python code
@@ -1614,8 +1643,9 @@ def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Age
     3. Suggest best practices and improvements
     4. Explain your reasoning
     5. Be aware of the limitations of the tools
-    6. Use edit_current_file() when suggesting changes to the file currently open in the editor
-    7. Always show a diff view for the user to review changes unless explicitly asked not to
+    6. ALWAYS use edit_current_file() when suggesting changes to the file currently open in the editor
+    7. ALWAYS show a diff view for the user to review changes unless explicitly asked not to
+    8. When suggesting code changes, first explain the changes, then show the diff using one of the two methods above
     
     You must return your response as a structured output with:
     - Python code always in triple backticks ```python ...```
@@ -1702,7 +1732,8 @@ terminal_agent = Agent[AgentContext](
 async def run_agent_query(
     query: str,
     context: AgentContext,
-    stream_callback = None
+    stream_callback = None,
+    timeout: int = 120  # Add timeout parameter with default of 120 seconds
 ) -> Dict[str, Any]:
     """
     Run a query through the agent system
@@ -1711,6 +1742,7 @@ async def run_agent_query(
         query: The user's query string
         context: The agent context
         stream_callback: Optional callback function for streaming responses
+        timeout: Maximum time in seconds to wait for API response (default: 120)
         
     Returns:
         Dictionary with the agent's response
@@ -1755,7 +1787,7 @@ async def run_agent_query(
         context.update_token_count(query_tokens)
         logger.info(f"Added {query_tokens} tokens for query, total: {context.token_count}")
         
-        # Set up run config
+        # Set up run config with timeout
         run_config = RunConfig(
             model_settings=ModelSettings(),
             trace_metadata={
@@ -1827,6 +1859,13 @@ async def run_agent_query(
                         "error": "No response from agent",
                         "response": "I couldn't process that request. No response was generated."
                     }
+            except openai.APITimeoutError as timeout_error:
+                # Specific handling for timeout errors
+                logger.error(f"API timeout error in agent query: {str(timeout_error)}")
+                return {
+                    "error": f"The request timed out after {timeout} seconds.",
+                    "response": "I couldn't complete this request because it took too long. Please try again with a simpler query or check your network connection."
+                }
             except Exception as run_error:
                 logger.error(f"Error in agent query: {str(run_error)}", exc_info=True)
                 return {
@@ -1834,6 +1873,13 @@ async def run_agent_query(
                     "response": f"I encountered an error while processing your request: {str(run_error)}"
                 }
                 
+    except openai.APITimeoutError as e:
+        # Catch timeout errors at the outer level
+        logger.error(f"API timeout error in agent query: {str(e)}")
+        return {
+            "error": f"The request timed out after {timeout} seconds.",
+            "response": "I couldn't complete this request because it took too long. Please try again with a simpler query or check your network connection."
+        }
     except InputGuardrailTripwireTriggered as guard_error:
         # Handle security guardrail trigger
         try:
@@ -1875,12 +1921,16 @@ def initialize_agent_system():
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-            logger.setLevel(logging.INFO)
+            logger.setLevel(logging.WARNING)
             
             # Also add a file handler for persistent logs
             file_handler = logging.FileHandler("terminator_agent.log")
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
+            logging.getLogger("httpx").setLevel(logging.WARNING)
+            logging.getLogger("openai").setLevel(logging.WARNING)
+            logging.getLogger("openai._base_client").setLevel(logging.WARNING)
+            logging.getLogger("httpcore").setLevel(logging.WARNING)
         
         # Check for API key
         api_key = os.getenv("OPENAI_API_KEY")
@@ -1889,26 +1939,68 @@ def initialize_agent_system():
             return False
             
         # Set the API key for both OpenAI and agents
+        from openai import OpenAI, AsyncOpenAI
+        
+        # Configure with higher timeout and better retry settings
         OpenAI.api_key = api_key
         set_default_openai_key(api_key)
         
-        # Verify API key works (optional - might add API call overhead)
-        try:
-            # This is a minimal API call to verify the key works
-            client = OpenAI()
-            models = client.models.list()
-            if not models:
-                logger.warning("API key verification: No models returned, but API didn't error")
-            else:
-                logger.info(f"API key verification successful, found {len(models.data)} models")
-        except Exception as e:
-            logger.error(f"API key verification failed: {str(e)}")
-            return False
+        # Create a custom client with increased timeouts
+        http_client = httpx.Client(
+            timeout=httpx.Timeout(60.0, connect=10.0),  # Increase timeout to 60 seconds
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+        async_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),  # Increase timeout to 60 seconds
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
         
-        # Log successful initialization
-        logger.info("Agent system initialized successfully")
+        # Use custom client for both sync and async OpenAI clients
+        client = OpenAI(api_key=api_key, http_client=http_client)
+        async_client = AsyncOpenAI(api_key=api_key, http_client=async_http_client)
+        
+        # Make these clients available globally
+        set_openai_clients(client, async_client)
+        
         return True
         
     except Exception as e:
         logger.error(f"Error initializing agent system: {str(e)}", exc_info=True)
         return False
+
+def set_logging_level(level_name: str) -> bool:
+        """
+        Set the logging level for the terminator_agents logger
+        
+        Args:
+            level_name: Name of logging level ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Map string names to logging levels
+            levels = {
+                'DEBUG': logging.DEBUG,
+                'INFO': logging.INFO,
+                'WARNING': logging.WARNING,
+                'ERROR': logging.ERROR,
+                'CRITICAL': logging.CRITICAL
+            }
+            
+            if level_name.upper() not in levels:
+                logger.error(f"Unknown logging level: {level_name}")
+                return False
+                
+            level = levels[level_name.upper()]
+            logger.setLevel(level)
+            
+            # Also set for file handler if it exists
+            for handler in logger.handlers:
+                if isinstance(handler, logging.FileHandler):
+                    handler.setLevel(level)
+                    
+            return True
+        except Exception as e:
+            print(f"Error setting logging level: {str(e)}")
+            return False

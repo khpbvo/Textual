@@ -3,14 +3,17 @@ Diff View Module - Provides UI components for displaying code diffs in Terminato
 """
 
 import difflib
-from typing import Dict, List, Tuple, Optional
+import asyncio
+from typing import Dict, List, Tuple, Optional, Callable, Awaitable, Any
 
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button, Horizontal, Static, Label, TextArea, Container
+    Button, Static, Label, TextArea
 )
 from textual.reactive import reactive
 from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Container, Horizontal
 
 class CodeDiff:
     """Utility class for creating and analyzing code diffs"""
@@ -48,7 +51,18 @@ class CodeDiff:
         
         for line in unified_diff.splitlines():
             # Skip header lines
-            if line.startswith('---') or line.startswith('+++') or line.startswith('@@'):
+            if line.startswith('---') or line.startswith('+++'):
+                continue
+                
+            if line.startswith('@@'):
+                # Parse hunk header to get starting line numbers
+                try:
+                    _, original_range, modified_range = line.split(' ', 2)
+                    current_original_line = int(original_range.split(',')[0].replace('-', '')) - 1
+                    current_modified_line = int(modified_range.split(',')[0].replace('+', '')) - 1
+                except Exception:
+                    # If we can't parse the hunk header, just continue
+                    continue
                 continue
                 
             if line.startswith('-'):
@@ -65,34 +79,29 @@ class CodeDiff:
                 current_modified_line += 1
                 
         return changes
-    
-    @staticmethod
-    def highlight_changes(text: str, line_changes: List[int]) -> str:
-        """Add highlight markup to changed lines in text"""
-        lines = text.splitlines()
-        result = []
-        
-        for i, line in enumerate(lines):
-            if i in line_changes:
-                result.append(f"[bold red]{line}[/bold red]")
-            else:
-                result.append(line)
-                
-        return '\n'.join(result)
+
 
 class DiffViewScreen(ModalScreen):
     """Modal screen for displaying code diffs"""
     
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("enter", "apply", "Apply Changes"),
+        Binding("tab", "toggle_view", "Toggle View")
+    ]
+    
     show_unified = reactive(False)
     
-    def __init__(self, 
-                original_content: str, 
-                modified_content: str, 
-                title: str = "Code Changes",
-                original_title: str = "Original",
-                modified_title: str = "Modified",
-                highlight_language: str = "python",
-                on_apply_callback = None):
+    def __init__(
+        self, 
+        original_content: str, 
+        modified_content: str, 
+        title: str = "Code Changes",
+        original_title: str = "Original",
+        modified_title: str = "Modified",
+        highlight_language: str = "python",
+        on_apply_callback: Optional[Callable[[str], Awaitable[Any]]] = None
+    ):
         """
         Initialize the diff view screen
         
@@ -103,7 +112,7 @@ class DiffViewScreen(ModalScreen):
             original_title: Title for the original content panel
             modified_title: Title for the modified content panel
             highlight_language: Language for syntax highlighting
-            on_apply_callback: Function to call when changes are applied
+            on_apply_callback: Async function to call when changes are applied
         """
         super().__init__()
         self.original_content = original_content
@@ -122,15 +131,7 @@ class DiffViewScreen(ModalScreen):
     
     def compose(self) -> ComposeResult:
         """Create the diff view layout"""
-        yield Container(id="diff-view-container")
-        self._refresh_view()
-    
-    def _refresh_view(self) -> None:
-        """Refresh the diff view based on current state"""
-        container = self.query_one("#diff-view-container")
-        container.remove_children()
-        
-        with container:
+        with Container(id="diff-view-container"):
             yield Label(self.screen_title, id="diff-title")
             
             if self.show_unified:
@@ -159,7 +160,7 @@ class DiffViewScreen(ModalScreen):
             
             with Horizontal(id="diff-buttons"):
                 yield Button("Apply Changes", id="apply-diff", variant="success")
-                yield Button("Toggle Unified View", id="toggle-unified-view")
+                yield Button("Toggle View", id="toggle-unified-view")
                 yield Button("Close", id="close-diff", variant="error")
     
     def on_mount(self) -> None:
@@ -167,59 +168,84 @@ class DiffViewScreen(ModalScreen):
         # Apply custom CSS classes to highlight changed lines
         self._highlight_changes()
         
-        # Add key binding for escape key
+    def watch_show_unified(self, show_unified: bool) -> None:
+        """React to changes in the show_unified state"""
+        self.remove()
+        self.compose()
         self.add_key_binding("escape", "close")
     
     def action_close(self) -> None:
         """Close the diff view"""
         self.app.pop_screen()
+        
+    def action_apply(self) -> None:
+        """Apply the changes"""
+        self._apply_changes()
+        
+    def action_toggle_view(self) -> None:
+        """Toggle between unified and side-by-side view"""
+        self.show_unified = not self.show_unified
     
     def _highlight_changes(self) -> None:
         """Highlight the lines that have changed in both panels"""
-        # This is a basic implementation - for a production app, 
-        # you would use proper CSS styling to highlight changes
         try:
-            # Create CSS for highlighting original lines that were changed
-            original_editor = self.query_one("#diff-original-content", TextArea)
-            for line_num in self.changed_lines["original"]:
-                # Apply highlighting to the lines that were changed in the original
-                pass  # This would require custom rendering in a full implementation
+            if not self.show_unified:
+                # Side-by-side view highlighting
+                original_editor = self.query_one("#diff-original-content", TextArea)
+                for line_num in self.changed_lines["original"]:
+                    if 0 <= line_num < len(self.original_content.splitlines()):
+                        # In the future, implement line-specific highlighting
+                        pass
+                
+                modified_editor = self.query_one("#diff-modified-content", TextArea)
+                for line_num in self.changed_lines["modified"]:
+                    if 0 <= line_num < len(self.modified_content.splitlines()):
+                        # In the future, implement line-specific highlighting
+                        pass
+        except Exception as e:
+            # Log the error but don't crash
+            import logging
+            logging.error(f"Error highlighting diff lines: {str(e)}", exc_info=True)
+    
+    async def _apply_changes(self) -> None:
+        """Apply the changes using the callback"""
+        try:
+            if self.on_apply_callback:
+                # Use proper asyncio.create_task to not block
+                asyncio.create_task(self._safe_apply_callback())
+            self.app.pop_screen()
+        except Exception as e:
+            import logging
+            logging.error(f"Error applying diff changes: {str(e)}", exc_info=True)
             
-            # Create CSS for highlighting modified lines that were changed    
-            modified_editor = self.query_one("#diff-modified-content", TextArea)
-            for line_num in self.changed_lines["modified"]:
-                # Apply highlighting to the lines that were changed in the modified
-                pass  # This would require custom rendering in a full implementation
-        except Exception:
-            # The side-by-side view might not be active
-            pass
+    async def _safe_apply_callback(self) -> None:
+        """Safely apply the callback with error handling"""
+        try:
+            if callable(self.on_apply_callback):
+                await self.on_apply_callback(self.modified_content)
+        except Exception as e:
+            import logging
+            logging.error(f"Error in diff apply callback: {str(e)}", exc_info=True)
+            # Notify the user through the app if possible
+            if hasattr(self.app, "notify"):
+                self.app.notify(f"Error applying changes: {str(e)}", severity="error")
     
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses"""
+        """Handle button presses asynchronously"""
         button_id = event.button.id
 
         if button_id == "close-diff":
             # Close without applying changes
-            self.app.pop_screen()
+            self.action_close()
         elif button_id == "apply-diff":
-            # Apply the changes and close
-            if self.on_apply_callback:
-                # Create a task to run the async callback function
-                import asyncio
-                asyncio.create_task(self.on_apply_callback(self.modified_content))
-            else:
-                # Use the older direct method if no callback is provided
-                self.app.apply_diff_changes(self.modified_content)
-            self.app.pop_screen()
+            # Apply the changes and close asynchronously
+            await self._apply_changes()
         elif button_id == "toggle-unified-view":
-            # Toggle visibility of unified diff panel
-            unified_panel = self.query_one("#unified-diff-panel")
-            if "hidden" in unified_panel.classes:
-                unified_panel.remove_class("hidden")
-            else:
-                unified_panel.add_class("hidden")
+            # Toggle between unified and side-by-side view
+            self.show_unified = not self.show_unified
 
-# CSS for the diff view
+
+# Improved CSS for the diff view
 DIFF_VIEW_CSS = """
 #diff-view-container {
     width: 95%;
@@ -227,7 +253,8 @@ DIFF_VIEW_CSS = """
     margin: 2 2;
     background: $surface;
     border: solid $accent;
-    padding: 1;
+    border-radius: 1;
+    padding: 1 1;
 }
 
 #diff-title {
@@ -237,6 +264,7 @@ DIFF_VIEW_CSS = """
     padding: 1;
     margin-bottom: 1;
     font-weight: bold;
+    border-radius: 1;
 }
 
 #diff-split-view {
@@ -254,11 +282,13 @@ DIFF_VIEW_CSS = """
     text-align: center;
     background: $panel;
     margin-bottom: 1;
+    border-radius: 1;
 }
 
 #diff-original-content, #diff-modified-content, #unified-diff {
     height: 100%;
     border: solid $panel-darken-1;
+    border-radius: 1;
 }
 
 #diff-buttons {
@@ -266,6 +296,10 @@ DIFF_VIEW_CSS = """
     height: 3;
     align-horizontal: center;
     margin-top: 1;
+}
+
+Button {
+    margin: 0 1;
 }
 
 /* Highlight styles for diff views */
@@ -277,5 +311,10 @@ DIFF_VIEW_CSS = """
 .diff-line-removed {
     background: $error-darken-2;
     color: $text;
+}
+
+/* Make the modal stand out more */
+.diff-view-screen {
+    background: rgba(0, 0, 0, 0.7);
 }
 """

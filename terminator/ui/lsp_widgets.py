@@ -7,11 +7,11 @@ import asyncio
 from typing import Dict, List, Any, Optional, Callable, Tuple, Set, Union
 
 from textual.app import ComposeResult
-from textual.widgets import Static, Label, Container, Button, ScrollableContainer
+from textual.widgets import Static, Label, Button
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widget import Widget
-
+from textual.containers import Container, ScrollableContainer
 logger = logging.getLogger(__name__)
 
 class HoverTooltip(Static):
