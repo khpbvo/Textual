@@ -47,7 +47,7 @@ from textual.timer import Timer
 # For older Textual versions
 from textual.theme import Theme
 import re
-
+import difflib
 # Import agent and tools modules
 from TerminatorV1_agents import initialize_agent_system, run_agent_query, AgentContext
 from TerminatorV1_tools import (
