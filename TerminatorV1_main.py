@@ -7,6 +7,7 @@ Combines code editing, file management, Git integration, and Claude AI assistanc
 import os
 import sys
 import asyncio
+import aiofiles
 import logging
 import time
 import json
@@ -159,7 +160,8 @@ class ThemeSelectionScreen(ModalScreen):
             self.app.pop_screen()
         elif button_id.startswith("theme-"):
             theme_name = button_id[6:]  # Remove "theme-" prefix
-            self.app.set_editor_theme(theme_name)
+            # Call the async method
+            await self.app.set_editor_theme(theme_name)
             self.app.pop_screen()
 
 
@@ -2066,9 +2068,7 @@ class TerminatorApp(App):
     # Track application state
     current_file = reactive(None)
     git_repository = reactive(None)
-    #editor_theme = reactive(
-    #    "monokai"
-    #)  # Rename to editor_theme to avoid conflict with built-in current_theme
+    editor_theme = reactive("monokai")
 
     # Add these variables to your class
     _last_status_update_time = 0
@@ -2124,6 +2124,7 @@ class TerminatorApp(App):
                 with Container(id="editor-content"):
                     yield Label("Code Editor", classes="title")
                     with Horizontal(id="editor-split-view"):
+                        
                         # Check if we have syntax extras before trying to use code_editor
                         try:
                             import tree_sitter_languages
@@ -2136,16 +2137,18 @@ class TerminatorApp(App):
                                 # Fallback for newer Textual versions that might use string directly
                                 theme_obj = "monokai"
 
+                            theme_str = "monokai"  # Default theme name as string
+
                             yield TextArea.code_editor(
                                 language="python",
-                                theme=theme_obj,
+                                theme=theme_str,
                                 show_line_numbers=True,
                                 tab_behavior="indent",
                                 id="editor-primary",
                             )
                             yield TextArea.code_editor(
                                 language="python",
-                                theme=theme_obj,
+                                theme=theme_str,
                                 show_line_numbers=True,
                                 tab_behavior="indent",
                                 id="editor-secondary",
@@ -2225,29 +2228,23 @@ class TerminatorApp(App):
         # Return None for text files instead of "text" to avoid tree-sitter error
         return extension_map.get(extension, None)
 
-    def set_editor_theme(self, theme_name: str) -> None:
-        """Set the theme for all editors"""
+    @work(thread=False)
+    async def set_editor_theme(self, theme_name: str) -> None:
+        """Set the theme for all editors asynchronously"""
         try:
-            # Create a Theme object instead of using string directly
-            try:
-                theme_obj = Theme(theme_name)
-            except Exception:
-                # Fallback for newer Textual versions
-                theme_obj = theme_name  # Some versions accept string directly
+            # Store the theme name as string
+            self.current_theme_name = theme_name
 
             # Apply theme to primary editor
             primary_editor = self.query_one("#editor-primary")
-            primary_editor.theme = theme_obj
+            primary_editor.theme = theme_name
 
             # Apply theme to secondary editor if it exists
             try:
                 secondary_editor = self.query_one("#editor-secondary")
-                secondary_editor.theme = theme_obj
+                secondary_editor.theme = theme_name
             except Exception:
                 pass  # Secondary editor might not exist yet
-
-            # Store the current theme name for reference
-            self.current_theme = theme_obj
 
             self.notify(f"Theme changed to: {theme_name}", severity="information")
         except Exception as e:
@@ -2274,7 +2271,11 @@ class TerminatorApp(App):
             modified_title: Title for the modified content panel
         """
         try:
-            # Create a diff view screen with the provided content
+            # Create a wrapper function for the async callback
+            async def apply_callback(content):
+                await self.apply_diff_changes(content)
+
+            # Create the diff screen with the async callback
             diff_screen = DiffViewScreen(
                 original_content=original_content,
                 modified_content=modified_content,
@@ -2282,6 +2283,7 @@ class TerminatorApp(App):
                 original_title=original_title,
                 modified_title=modified_title,
                 highlight_language=language,
+                on_apply_callback=apply_callback,  # Pass the async wrapper
             )
 
             # Push the screen
@@ -2299,17 +2301,17 @@ class TerminatorApp(App):
     ) -> None:
         """
         Show code suggestions from the AI agent with a diff view
-
+    
         Args:
             original_content: The original file content
             new_content: The suggested new content
             title: Title for the diff view popup
         """
         try:
-            # Create a callback that will be called when the user clicks "Apply Changes"
-            def on_apply_callback(content):
-                self.apply_diff_changes(content)
-
+            # Create a wrapper function for the async callback
+            async def apply_callback(content):
+                await self.apply_diff_changes(content)
+                
             # Create a diff view screen with the provided content
             diff_screen = DiffViewScreen(
                 original_content=original_content,
@@ -2320,18 +2322,18 @@ class TerminatorApp(App):
                 highlight_language=self._get_language_from_filename(self.current_file)
                 if self.current_file
                 else "python",
-                on_apply_callback=on_apply_callback,
+                on_apply_callback=apply_callback
             )
-
+    
             # Push the screen
             self.push_screen(diff_screen)
-
+    
             # Show a notification about the suggestion
             self.notify(
                 "AI has suggested changes. Review and apply if desired.",
                 severity="information",
             )
-
+    
         except Exception as e:
             self.notify(f"Error showing code suggestion: {str(e)}", severity="error")
             logging.error(f"Error showing code suggestion: {str(e)}", exc_info=True)
@@ -2374,43 +2376,44 @@ class TerminatorApp(App):
 
         return language_map.get(ext, "python")
 
-    def apply_diff_changes(self, new_content: str) -> None:
+    @work(thread=True)
+    async def apply_diff_changes(self, new_content: str) -> None:
         """
         Apply changes from diff view to the current file
-
+    
         Args:
             new_content: The new content to apply
         """
         if not self.current_file:
             self.notify("No file selected to save changes to", severity="error")
             return
-
+    
         try:
             # Get the active editor
             if self.active_editor == "primary":
                 editor = self.query_one("#editor-primary")
             else:
                 editor = self.query_one("#editor-secondary")
-
+    
             # Update the editor content
             if hasattr(editor, "load_text"):
                 editor.load_text(new_content)
             else:
                 editor.text = new_content
-
-            # Save the changes to the file
-            with open(self.current_file, "w", encoding="utf-8") as file:
-                file.write(new_content)
-
+    
+            # Save the changes to the file asynchronously
+            async with aiofiles.open(self.current_file, "w", encoding="utf-8") as file:
+                await file.write(new_content)
+    
             self.notify(
                 f"Changes applied and saved to {os.path.basename(self.current_file)}",
                 severity="success",
             )
-
+    
             # Update git status if applicable
             if hasattr(self, "git_repository") and self.git_repository:
                 asyncio.create_task(self.update_git_status())
-
+    
         except Exception as e:
             self.notify(f"Error applying changes: {str(e)}", severity="error")
             logging.error(f"Error applying changes: {str(e)}", exc_info=True)
@@ -2801,39 +2804,45 @@ class TerminatorApp(App):
         except Exception as e:
             git_output.update(f"Error: {str(e)}")
 
-    @work
+    @work(thread=True)
     async def git_commit(self, message: str):
-        """Commit changes to the Git repository"""
+        """Commit changes to the Git repository asynchronously"""
         if not self.git_repository:
             self.notify("Not a Git repository", severity="error")
             return
-
+    
         try:
+            # Use asyncio.subprocess for async process execution
+            import asyncio.subprocess
+    
             # First add all changes
-            result = subprocess.run(
-                ["git", "add", "."],
-                capture_output=True,
-                text=True,
-                cwd=self.git_repository,
+            process = await asyncio.subprocess.create_subprocess_exec(
+                "git", "add", ".",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.git_repository
             )
-
-            if result.returncode != 0:
-                self.notify(f"Git add failed: {result.stderr}", severity="error")
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                self.notify(f"Git add failed: {stderr.decode()}", severity="error")
                 return
-
-            # Then commit with GitManager
-            success, result_msg = GitManager.git_commit(self.git_repository, message)
-
+    
+            # Then commit with GitManager (assuming it supports async)
+            success, result_msg = await GitManager.git_commit_async(self.git_repository, message)
+    
             if success:
                 self.notify("Changes committed successfully", severity="success")
                 # Update status after commit
-                self.update_git_status()
+                await self.update_git_status()
             else:
                 self.notify(f"Commit failed: {result_msg}", severity="error")
-
+    
         except Exception as e:
             self.notify(f"Error making commit: {str(e)}", severity="error")
 
+    @work(thread=True)
     async def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected):
         """Handle file selection in the directory tree"""
         try:
@@ -2862,8 +2871,8 @@ class TerminatorApp(App):
             self.title = f"Terminator - {path}"
 
             # Load the file content
-            with open(path, "r", encoding="utf-8") as file:
-                content = file.read()
+            async with aiofiles.open(path, "r", encoding="utf-8") as file:
+                content = await file.read()
 
             # Get file extension for language detection
             extension = os.path.splitext(path)[1].lower()
@@ -2886,21 +2895,15 @@ class TerminatorApp(App):
                 editor.text = content
 
             # Apply the current theme
-            if hasattr(self, "current_theme") and self.current_theme is not None:
-                # Current theme is already a Theme object
-                editor.theme = self.current_theme
+            if hasattr(self, "current_theme_name") and self.current_theme_name is not None:
+            # Use the theme name string directly
+                editor.theme = self.current_theme_name
             elif hasattr(self, "editor_theme") and self.editor_theme is not None:
-                # Convert editor_theme string to Theme object
-                try:
-                    theme_obj = Theme(self.editor_theme)
-                    editor.theme = theme_obj
-                except Exception:
-                    # Fallback for newer Textual versions or errors
-                    try:
-                        editor.theme = self.editor_theme
-                    except Exception:
-                        # Just skip theme if it fails
-                        pass
+            # Use the editor_theme string directly
+                editor.theme = self.editor_theme
+            else:
+                # Fallback to default theme
+                editor.theme = "monokai"
 
             # Focus the editor
             editor.focus()
@@ -2970,31 +2973,27 @@ class TerminatorApp(App):
         if not self.current_file:
             self.notify("No file selected to save", severity="warning")
             return
-
+    
         try:
             # Get the active editor
             if self.active_editor == "primary":
                 editor = self.query_one("#editor-primary")
             else:
                 editor = self.query_one("#editor-secondary")
-
-            # Get content before I/O operations to avoid UI blocking
+    
+            # Get content
             content = editor.text
-
-            # Use run_in_thread to perform file I/O off the main thread
-            def write_file():
-                with open(self.current_file, "w", encoding="utf-8") as file:
-                    file.write(content)
-
-            # Run the file write in a separate thread
-            await self.run_worker(write_file)
-
-            # Notify success after async operation completes
+    
+            # Use aiofiles for async file I/O
+            async with aiofiles.open(self.current_file, "w", encoding="utf-8") as file:
+                await file.write(content)
+    
+            # Notify success
             self.notify(f"Saved {self.current_file}")
-
-            # Schedule git status update as a separate task to avoid blocking
+    
+            # Schedule git status update as a separate task
             asyncio.create_task(self.update_git_status())
-
+    
         except Exception as e:
             self.notify(f"Error saving file: {str(e)}", severity="error")
 
@@ -3553,35 +3552,35 @@ class TerminatorApp(App):
                 "AI agent not initialized, cannot format code", severity="error"
             )
 
-    @work
+    @work(thread=True)
     async def action_analyze_code(self) -> None:
         """Analyze the current code for issues"""
         if not self.current_file:
             self.notify("No file selected for analysis", severity="warning")
             return
-
+    
         if not self.current_file.endswith(".py"):
             self.notify("Only Python files can be analyzed", severity="warning")
             return
-
+    
         # Get the active editor content
         if self.active_editor == "primary":
             editor = self.query_one("#editor-primary")
         else:
             editor = self.query_one("#editor-secondary")
-
+    
         code = editor.text
-
+    
         # Show the analysis dialog
         self.push_screen(CodeAnalysisDialog())
-
+    
         try:
-            # Use CodeAnalyzer
-            analysis = CodeAnalyzer.analyze_python_code(code)
-
+            # Use CodeAnalyzer with async features
+            analysis = await CodeAnalyzer.analyze_python_code_async(code)
+    
             # Format the result as markdown
             result_md = f"# Analysis of {os.path.basename(self.current_file)}\n\n"
-
+    
             # Add issues
             if analysis.get("issues"):
                 result_md += f"## Issues Found ({len(analysis['issues'])})\n\n"
@@ -3589,24 +3588,24 @@ class TerminatorApp(App):
                     result_md += f"- **Line {issue.get('line', '?')}**: {issue.get('message', 'Unknown issue')} ({issue.get('type', 'unknown')})\n"
             else:
                 result_md += "## No Issues Found\n\n"
-
+    
             # Add recommendations
             if analysis.get("recommendations"):
                 result_md += f"\n## Recommendations\n\n"
                 for rec in analysis["recommendations"]:
                     result_md += f"- {rec}\n"
-
+    
             # Also add code stats
-            stats = CodeAnalyzer.count_code_lines(code)
+            stats = await CodeAnalyzer.count_code_lines_async(code)
             result_md += f"\n## Code Statistics\n\n"
             result_md += f"- Total lines: {stats.get('total_lines', 0)}\n"
             result_md += f"- Code lines: {stats.get('code_lines', 0)}\n"
             result_md += f"- Comment lines: {stats.get('comment_lines', 0)}\n"
             result_md += f"- Blank lines: {stats.get('blank_lines', 0)}\n"
-
+    
             # Post the completion event with the result
             self.post_message(self.CodeAnalysisComplete(result_md))
-
+    
         except Exception as e:
             error_msg = f"# Error During Analysis\n\n{str(e)}"
             self.post_message(self.CodeAnalysisComplete(error_msg))

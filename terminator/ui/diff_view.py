@@ -194,25 +194,30 @@ class DiffViewScreen(ModalScreen):
             # The side-by-side view might not be active
             pass
     
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses in the diff view"""
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses"""
         button_id = event.button.id
-        
-        if button_id == "toggle-unified-view":
-            # Toggle between unified and side-by-side view
-            self.show_unified = not self.show_unified
-            self._refresh_view()
-        
-        elif button_id == "apply-diff":
-            # Apply the changes
-            if self.on_apply_callback:
-                self.on_apply_callback(self.modified_content)
-            # Close the screen
-            self.app.pop_screen()
-        
-        elif button_id == "close-diff":
+
+        if button_id == "close-diff":
             # Close without applying changes
             self.app.pop_screen()
+        elif button_id == "apply-diff":
+            # Apply the changes and close
+            if self.on_apply_callback:
+                # Create a task to run the async callback function
+                import asyncio
+                asyncio.create_task(self.on_apply_callback(self.modified_content))
+            else:
+                # Use the older direct method if no callback is provided
+                self.app.apply_diff_changes(self.modified_content)
+            self.app.pop_screen()
+        elif button_id == "toggle-unified-view":
+            # Toggle visibility of unified diff panel
+            unified_panel = self.query_one("#unified-diff-panel")
+            if "hidden" in unified_panel.classes:
+                unified_panel.remove_class("hidden")
+            else:
+                unified_panel.add_class("hidden")
 
 # CSS for the diff view
 DIFF_VIEW_CSS = """

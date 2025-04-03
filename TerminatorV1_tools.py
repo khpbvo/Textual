@@ -288,6 +288,42 @@ class CodeAnalyzer:
             "comment_lines": comment_lines,
             "blank_lines": blank_lines
         }
+        
+
+    @staticmethod
+    async def analyze_python_code_async(code: str) -> dict:
+        """Analyze Python code asynchronously"""
+        try:
+        # Convert synchronous method to async using run_in_executor
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, CodeAnalyzer.analyze_python_code, code)
+        except Exception as e:
+            logging.error(f"Async code analysis error: {str(e)}", exc_info=True)
+            return {"error": str(e), "issues": [], "recommendations": []}
+            
+    @staticmethod
+    async def count_code_lines_async(code: str) -> dict:
+        """Count code lines asynchronously"""
+        try:
+            # Convert synchronous method to async using run_in_executor
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, CodeAnalyzer.count_code_lines, code)
+        except Exception as e:
+            logging.error(f"Async line counting error: {str(e)}", exc_info=True)
+            return {"error": str(e), "total_lines": 0, "code_lines": 0, "comment_lines": 0, "blank_lines": 0}
+        
+    @staticmethod
+    async def create_diff_async(original_content: str, modified_content: str) -> str:
+        """Create a unified diff asynchronously"""
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, CodeAnalyzer.create_diff, original_content, modified_content)
+        except Exception as e:
+            logging.error(f"Async diff creation error: {str(e)}", exc_info=True)
+            return f"Error creating diff: {str(e)}"        
 
 # Git Utilities
 class GitManager:
