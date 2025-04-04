@@ -13,7 +13,7 @@ import time
 import json
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable, Awaitable
 from terminator.ui.panels import ResizablePanelsMixin, PANEL_CSS
 # Textual imports
 from textual.app import App, ComposeResult
@@ -2254,7 +2254,78 @@ class TerminatorApp(App, ResizablePanelsMixin):
         except Exception as e:
             self.notify(f"Error setting theme: {str(e)}", severity="error")
 
-    def show_diff_view(
+    async def _process_agent_code_suggestions(self, response_text: str, current_file: str = None) -> bool:
+        """
+        Process agent response for code suggestions and display them in diff view
+        
+        Args:
+            response_text: The raw response text from the agent
+            current_file: Current file path (if any) for the code suggestion
+            
+        Returns:
+            True if code suggestions were found and processed, False otherwise
+        """
+        import re
+        
+        # Extract code blocks with language specifier
+        code_blocks = re.findall(r'```(\w+)\n(.*?)```', response_text, re.DOTALL)
+        
+        if not code_blocks:
+            return False
+        
+        # Get the first code block to display
+        lang, code = code_blocks[0]
+        
+        # Check if we have a current file
+        if not current_file and self.current_file:
+            current_file = self.current_file
+        
+        # If we don't have a current file, we can't show diff
+        if not current_file:
+            self.notify("Can't show diff - no current file", severity="warning")
+            return False
+        
+        # Get current content of file
+        try:
+            with open(current_file, 'r', encoding='utf-8') as f:
+                current_content = f.read()
+        except Exception as e:
+            self.notify(f"Failed to read current file: {str(e)}", severity="error")
+            return False
+        
+        # Show diff view
+        description = "AI-suggested code changes"
+        
+        # Get the context manager
+        if hasattr(self, "context_manager"):
+            try:
+                await self.context_manager.handle_code_suggestion(
+                    file_path=current_file,
+                    original_content=current_content,
+                    suggested_content=code,
+                    description=description,
+                    language=lang
+                )
+                return True
+            except Exception as e:
+                logging.error(f"Error using context manager: {str(e)}", exc_info=True)
+                # Fall through to direct diff view as fallback
+        
+        # Fallback to direct diff view if no context manager or it failed
+        try:
+            diff_screen = await self.show_diff_view(
+                original_content=current_content,
+                modified_content=code,
+                title=f"Suggested Changes: {current_file}",
+                language=lang
+            )
+            return diff_screen is not None
+        except Exception as e:
+            logging.error(f"Error showing diff view: {str(e)}", exc_info=True)
+            self.notify(f"Error showing diff: {str(e)}", severity="error")
+            return False
+
+    async def show_diff_view(
         self,
         original_content: str,
         modified_content: str,
@@ -2262,25 +2333,13 @@ class TerminatorApp(App, ResizablePanelsMixin):
         language: str = "python",
         original_title: str = "Original",
         modified_title: str = "Modified",
+        on_apply_callback: Optional[Callable[[str], Awaitable[Any]]] = None
     ) -> None:
-        """
-        Show the diff view popup for comparing original and modified content
-    
-        Args:
-            original_content: The original content
-            modified_content: The modified content
-            title: Title for the diff view
-            language: Language for syntax highlighting
-            original_title: Title for the original content panel
-            modified_title: Title for the modified content panel
-        """
+        """Show a diff view between original and modified content"""
         try:
-            # Create a wrapper function for the async callback
-            async def apply_callback(content):
-                # Use our async diff apply function
-                await self.apply_diff_changes(content)
-                
-            # Create the diff screen with our async callback
+            # Import DiffViewScreen from your UI module
+            from terminator.ui.diff_view import DiffViewScreen
+            
             diff_screen = DiffViewScreen(
                 original_content=original_content,
                 modified_content=modified_content,
@@ -2288,25 +2347,16 @@ class TerminatorApp(App, ResizablePanelsMixin):
                 original_title=original_title,
                 modified_title=modified_title,
                 highlight_language=language,
-                on_apply_callback=apply_callback  # Pass our async wrapper function
+                on_apply_callback=on_apply_callback
             )
             
-            # Log that we're showing the diff view for debugging
-            logging.info(f"Showing diff view: {title} (content length: {len(modified_content)})")
-            
-            # Push the screen to display it
-            self.push_screen(diff_screen)
-            
-            # Show a notification to ensure the user knows what happened
-            self.notify(
-                "Showing diff view. Review and apply changes if needed.",
-                severity="information"
-            )
-    
+            # Push the screen and await it
+            await self.push_screen(diff_screen)
+            return diff_screen
         except Exception as e:
-            # Log the error and notify the user
             logging.error(f"Error showing diff view: {str(e)}", exc_info=True)
             self.notify(f"Error showing diff view: {str(e)}", severity="error")
+            return None
 
     def show_code_suggestion(
         self,
@@ -2516,6 +2566,8 @@ class TerminatorApp(App, ResizablePanelsMixin):
             "editor-container": 60,  # Default editor width 60%
             "ai-panel": 20,  # Default AI panel width 20%
         }
+        self.apply_panel_widths()
+
 
         # Check for syntax highlighting dependencies
         self.ensure_syntax_dependencies()
@@ -2578,6 +2630,22 @@ class TerminatorApp(App, ResizablePanelsMixin):
 
         # Apply initial panel widths
         self._apply_panel_widths()
+
+        # Add this to your app's __init__ or on_mount method in TerminatorV1_main.py
+    def initialize_context_manager(self):
+        """Initialize the agent context manager with app reference"""
+        from terminator.agents.context_manager import AgentContextManager
+        
+        # Create the context manager with app reference
+        self.context_manager = AgentContextManager(
+            max_tokens=150000,
+            token_warning_threshold=0.8,
+            app=self  # Pass self as the app reference
+        )
+        
+        # Initialize context
+        self.agent_context = self.context_manager.initialize_context()
+        logging.info(f"Agent context initialized with directory: {self.get_current_directory()}")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission events for all inputs in the app"""
@@ -2656,6 +2724,11 @@ class TerminatorApp(App, ResizablePanelsMixin):
         """Handle mouse move events"""
         # Call the mixin's handler for panel resizing
         await self.handle_gutter_mouse_move(event)
+    
+    async def on_resize(self, event: events.Resize) -> None:
+        """Handle window resize events"""
+        # Re-apply panel widths when the window is resized
+        self.apply_panel_widths()
 
     def get_widget_at(self, x: int, y: int):
         """
@@ -3092,32 +3165,33 @@ class TerminatorApp(App, ResizablePanelsMixin):
             self.call_after_refresh(self._update_ai_output_with_response, error_message)
             return error_message
 
-    def _update_ai_output_with_response(self, response):
-        """Update the AI output widget with the response"""
+    async def _update_ai_output_with_response(self, response):
+        """Update the AI output widget with the agent response"""
         try:
-            ai_output = self.query_one("#ai-output")
-            # Get current content as a string - Markdown widgets use .update() in newer Textual
-            current_content = str(ai_output)
-
-            # Remove the "Thinking..." placeholder and add the real response
-            if "*Thinking...*" in current_content:
-                # Find everything before "Thinking..."
-                thinking_pos = current_content.find("*Thinking...*")
-                if thinking_pos > 0:
-                    current_content = current_content[:thinking_pos]
-                else:
-                    # Just use a clean slate if we can't find the position
-                    current_content = ""
-
-            # Add the response and update the markdown
-            ai_output.update(f"{current_content}{response}")
-
-            # Check for code edits in the response
-            self._check_for_code_suggestions(response)
-
+            # Get the AI output widget
+            ai_output = self.query_one("#ai-output", Markdown)
+            
+            # Check if the response is a string or a structured response
+            if isinstance(response, str):
+                response_text = response
+            elif isinstance(response, dict) and "response" in response:
+                response_text = response["response"]
+            else:
+                response_text = str(response)
+            
+            # Update the AI output widget
+            ai_output.update(response_text)
+            
+            # Process any code suggestions in the response
+            # Use asyncio.create_task to avoid blocking
+            asyncio.create_task(self._process_agent_code_suggestions(
+                response_text, 
+                self.current_file
+            ))
+            
         except Exception as e:
-            self.notify(f"Error updating AI output: {str(e)}", severity="error")
             logging.error(f"Error updating AI output: {str(e)}", exc_info=True)
+            self.notify(f"Error updating AI output: {str(e)}", severity="error")
 
     async def on_mouse_down(self, event: MouseDown) -> None:
         """Handle mouse down events for gutter resizing"""
