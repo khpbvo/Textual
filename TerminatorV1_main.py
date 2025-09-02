@@ -1642,7 +1642,8 @@ class TerminatorApp(App, ResizablePanelsMixin):
         }
         
         #ai-input {
-            height: 25%;
+            /* Let the input take only the space it needs */
+            height: auto;
         }
         
         .title {
@@ -1959,16 +1960,21 @@ class TerminatorApp(App, ResizablePanelsMixin):
             width: 60%;
             min-width: 30%;
             max-width: 80%;
+            height: 100%;
+            min-height: 0;
         }
         
         #ai-panel {
             width: 20%;
             min-width: 10%;
             max-width: 40%;
+            height: 100%;
+            min-height: 0;
         }
         
         .panel {
-            overflow: auto;
+            /* Let inner content manage scrolling (like #ai-chat) */
+            overflow: hidden auto;
         }
         
         .gutter {
@@ -2024,6 +2030,46 @@ class TerminatorApp(App, ResizablePanelsMixin):
             background: $surface-darken-2;
             margin: 1;
             padding: 1;
+            overflow-x: auto;
+        }
+
+        /* Chat styling */
+        #ai-chat {
+            /* Fill remaining height of the AI panel and allow scrolling */
+            height: 1fr;
+            min-height: 0; /* important to allow ScrollableContainer to shrink */
+            border: solid $panel-darken-1;
+            padding: 1;
+            overflow-y: auto;
+        }
+        .chat-msg {
+            margin: 1 0;
+            max-width: 100%;
+        }
+        .chat-meta {
+            color: $text-muted;
+            margin-bottom: 0;
+        }
+        .chat-bubble {
+            padding: 1;
+            border-radius: 1;
+            text-wrap: wrap;
+            overflow-x: auto; /* code blocks can scroll horizontally */
+        }
+        /* Role-specific coloring using classes applied directly on .chat-msg */
+        .chat-msg.user .chat-bubble {
+            background: $accent-darken-2;
+            color: $text;
+        }
+        .chat-msg.assistant .chat-bubble {
+            background: $surface-darken-2;
+            color: $text;
+            border: solid $panel-darken-1;
+        }
+        .chat-msg.system .chat-bubble {
+            background: $panel-darken-2;
+            color: $text-muted;
+            text-style: italic;
         }
         /* Add these to your CSS section */
 
@@ -2196,15 +2242,71 @@ class TerminatorApp(App, ResizablePanelsMixin):
             # Right AI panel - initially 20% width
             with Vertical(id="ai-panel", classes="panel"):
                 yield Label("AI Assistant", classes="title")
-                yield Markdown(
-                    "Welcome to Terminator v1! Ask me anything about your code.",
-                    id="ai-output",
-                )
+                with ScrollableContainer(id="ai-chat"):
+                    pass
                 with Vertical(id="ai-input"):
                     yield Input(placeholder="Ask the AI...", id="ai-prompt")
                     yield Button("Submit", id="ai-submit")
 
         yield Footer()
+
+    def _scroll_ai_chat_end(self) -> None:
+        """Scroll the AI chat container to the end safely."""
+        try:
+            chat = self.query_one("#ai-chat")
+            # Newer Textual has scroll_end, older may not; try both approaches
+            if hasattr(chat, "scroll_end"):
+                chat.scroll_end(animate=False)
+            else:
+                chat.scroll_to(y=10**9)
+        except Exception:
+            pass
+
+    def _append_chat_message(self, *, role: str, content: str = "", streaming: bool = False):
+        """Append a message bubble to the AI chat and optionally return a Markdown for streaming.
+
+        Args:
+            role: one of "user", "assistant", or "system".
+            content: initial markdown content for the bubble.
+            streaming: when True, returns the Markdown widget so callers can update it.
+
+        Returns:
+            The Markdown widget if streaming is True, otherwise None.
+        """
+        try:
+            chat = self.query_one("#ai-chat")
+
+            # Create a simple bubble container with a small header
+            header = {
+                "user": "You",
+                "assistant": "AI Assistant",
+                "system": "System",
+            }.get(role, "Message")
+
+            # Wrap each message in a container that marks the role for styling
+            msg = Vertical(classes=f"chat-msg {role}")
+            chat.mount(msg)
+
+            # Header/meta line
+            msg.mount(Label(header, classes="chat-meta"))
+
+            # Actual bubble with Markdown content
+            bubble = Vertical(classes="chat-bubble")
+            md = Markdown(content or "")
+            bubble.mount(md)
+            msg.mount(bubble)
+
+            self._scroll_ai_chat_end()
+
+            if streaming:
+                # Remember the streaming target so incremental updates can land here
+                self._stream_msg_md = md
+                return md
+            return None
+        except Exception as e:
+            # Fall back to a notification if chat UI not present
+            self.notify(f"Failed to append chat message: {str(e)}", severity="error")
+            return None
 
     def get_language_from_extension(self, extension):
         """Map file extension to language for syntax highlighting"""
@@ -2694,21 +2796,7 @@ class TerminatorApp(App, ResizablePanelsMixin):
         except Exception as e:
             logging.error(f"Error applying panel widths: {str(e)}", exc_info=True)
 
-    async def on_static_click(self, event) -> None:
-        """Handle click events on static elements, including gutters"""
-        if event.static.has_class("gutter"):
-            # Determine which panel is being resized
-            if event.static.query_one("#sidebar", default=None) is not None:
-                self.resizing_panel = "sidebar"
-            elif event.static.query_one("#editor-container", default=None) is not None:
-                self.resizing_panel = "editor-container"
-            else:
-                self.resizing_panel = None
-                return
-
-            # Start resizing
-            self.resizing = True
-            self.start_x = event.screen_x
+    # Removed on_static_click; resizing is handled via mouse down/move/up
 
     async def on_mouse_down(self, event: MouseDown) -> None:
         """Handle mouse down events"""
@@ -3034,9 +3122,12 @@ class TerminatorApp(App, ResizablePanelsMixin):
         self.action_save()
 
         try:
-            # Show running indicator
-            ai_output = self.query_one("#ai-output")
-            ai_output.update(f"Running {os.path.basename(self.current_file)}...\n\n")
+            # Show running indicator in chat
+            run_md = self._append_chat_message(
+                role="assistant",
+                content=f"Running {os.path.basename(self.current_file)}...\n\n",
+                streaming=True,
+            )
 
             # Execute the Python file
             import subprocess
@@ -3064,12 +3155,17 @@ class TerminatorApp(App, ResizablePanelsMixin):
             else:
                 output += f"❌ Program failed with exit code: {result.returncode}"
 
-            ai_output.update(output)
+            if run_md is not None:
+                run_md.update(output)
+            else:
+                self._append_chat_message(role="assistant", content=output)
 
         except Exception as e:
             self.notify(f"Error running file: {str(e)}", severity="error")
-            ai_output = self.query_one("#ai-output")
-            ai_output.update(f"## Execution Error\n\n```\n{str(e)}\n```")
+            self._append_chat_message(
+                role="assistant",
+                content=f"## Execution Error\n\n```\n{str(e)}\n```",
+            )
 
     async def action_ai_request(self):
         """Process an AI request"""
@@ -3099,23 +3195,20 @@ class TerminatorApp(App, ResizablePanelsMixin):
             self.notify(f"Error getting editor context: {str(e)}", severity="error")
             code_context = ""
 
-        # Update the AI output with the query
+        # Post the user question in chat and prepare an assistant bubble for streaming
         try:
-            ai_output = self.query_one("#ai-output")
-            # Get current content as a string - Markdown widgets use str() in newer Textual
-            current_content = str(ai_output)
-
-            # Update the markdown with the query
-            ai_output.update(
-                f"{current_content}\n\n### Your Question:\n{prompt}\n\n### AI Assistant:\n*Thinking...*"
-            )
+            # User message bubble
+            self._append_chat_message(role="user", content=prompt)
+            # Prepare streaming state and assistant bubble
+            self._stream_buffer = ""
+            self._stream_header = ""  # Header no longer needed with chat bubbles
+            self._append_chat_message(role="assistant", content="", streaming=True)
         except Exception as e:
-            self.notify(f"Error updating AI output: {str(e)}", severity="error")
+            self.notify(f"Error preparing AI chat: {str(e)}", severity="error")
 
-        # Call the AI agent
+        # Call the AI agent (streaming)
         try:
-            worker = self.call_ai_agent(prompt, code_context)
-            # Don't await here - worker will process in the background
+            await self.call_ai_agent(prompt, code_context)
         except Exception as e:
             self.notify(f"Error calling AI agent: {str(e)}", severity="error")
             logging.error(f"AI agent error: {str(e)}", exc_info=True)
@@ -3146,17 +3239,21 @@ class TerminatorApp(App, ResizablePanelsMixin):
                 return f"I'm working with this code:\n```python\n{code_context}\n```\n\nMy question: {prompt}"
         return prompt
 
-    @work(thread=True)
     async def call_ai_agent(self, prompt, code_context):
-        """Call the AI agent with the prompt and code context"""
-        # Must return a value from work decorator
-        return await self._process_ai_agent_call(prompt, code_context)
+        """Schedule AI agent call without blocking UI"""
+        asyncio.create_task(self._process_ai_agent_call(prompt, code_context))
+        return None
 
     async def _process_ai_agent_call(self, prompt, code_context):
         """Internal method to process AI agent call"""
         try:
             full_prompt = self._prepare_agent_prompt(prompt, code_context)
-            result = await run_agent_query(full_prompt, self.agent_context)
+            # Enable streaming so users see partial output
+            result = await run_agent_query(
+                full_prompt,
+                self.agent_context,
+                stream_callback=self._on_stream_event,
+            )
             response = result.get("response", "I couldn't process that request.")
             self.call_after_refresh(self._update_ai_output_with_response, response)
             return response
@@ -3166,114 +3263,123 @@ class TerminatorApp(App, ResizablePanelsMixin):
             return error_message
 
     async def _update_ai_output_with_response(self, response):
-        """Update the AI output widget with the agent response"""
+        """Finalize the assistant message bubble with the agent response"""
         try:
-            # Get the AI output widget
-            ai_output = self.query_one("#ai-output", Markdown)
-            
-            # Check if the response is a string or a structured response
             if isinstance(response, str):
                 response_text = response
             elif isinstance(response, dict) and "response" in response:
                 response_text = response["response"]
             else:
                 response_text = str(response)
-            
-            # Update the AI output widget
-            ai_output.update(response_text)
-            
-            # Process any code suggestions in the response
-            # Use asyncio.create_task to avoid blocking
+
+            md = getattr(self, "_stream_msg_md", None)
+            if md is not None:
+                md.update(response_text)
+            self._scroll_ai_chat_end()
+
             asyncio.create_task(self._process_agent_code_suggestions(
-                response_text, 
+                response_text,
                 self.current_file
             ))
-            
         except Exception as e:
             logging.error(f"Error updating AI output: {str(e)}", exc_info=True)
             self.notify(f"Error updating AI output: {str(e)}", severity="error")
 
-    async def on_mouse_down(self, event: MouseDown) -> None:
-        """Handle mouse down events for gutter resizing"""
-        # Check if we clicked on a gutter element
-        target, _ = self.get_widget_at(event.screen_x, event.screen_y)
+    async def _on_stream_event(self, event) -> None:
+        """Handle streaming events from the Agents SDK and update the UI incrementally"""
+        try:
+            # Lazily initialize stream buffer/header if not present
+            if not hasattr(self, "_stream_buffer"):
+                self._stream_buffer = ""
+            # target Markdown widget captured when starting streaming
 
-        if target and isinstance(target, Static) and target.has_class("gutter"):
-            # Find the adjacent panels for this gutter
-            gutter_idx = list(self.query(".gutter")).index(target)
+            etype = getattr(event, "type", None)
+            if etype == "raw_response_event":
+                data = getattr(event, "data", None)
+                delta = getattr(data, "delta", None)
+                if isinstance(delta, str) and delta:
+                    self._stream_buffer += delta
 
-            if gutter_idx == 0:
-                # First gutter - between sidebar and editor
-                self.resizing_panel = "sidebar"
-            elif gutter_idx == 1:
-                # Second gutter - between editor and AI panel
-                self.resizing_panel = "editor-container"
+                    md = getattr(self, "_stream_msg_md", None)
+                    if md is not None:
+                        def _update():
+                            try:
+                                md.update(self._stream_buffer)
+                                self._scroll_ai_chat_end()
+                            except Exception:
+                                pass
+                        self.call_after_refresh(_update)
+            elif etype == "agent_updated_stream_event":
+                new_agent = getattr(event, "new_agent", None)
+                name = getattr(new_agent, "name", "Agent")
+                def _handoff_update():
+                    try:
+                        self._append_chat_message(
+                            role="system",
+                            content=f"Handoff: switched to agent " + str(name) + "."
+                        )
+                    except Exception:
+                        pass
+                self.call_after_refresh(_handoff_update)
+                self._scroll_ai_chat_end()
+            elif etype == "run_item_stream_event":
+                item = getattr(event, "item", None)
+                itype = getattr(item, "type", None)
+                if itype == "tool_call_item":
+                    tname = getattr(item, "tool_name", getattr(item, "name", "tool"))
+                    args = getattr(item, "arguments", getattr(item, "args", None))
+                    try:
+                        import json as _json
+                        args_str = _json.dumps(args, indent=2, default=str) if args is not None else "{}"
+                    except Exception:
+                        args_str = str(args)
+                    msg = f"Calling tool: {tname}\n\n```json\n{args_str}\n```"
+                    def _tool_start():
+                        try:
+                            self._append_chat_message(role="system", content=msg)
+                        except Exception:
+                            pass
+                    self.call_after_refresh(_tool_start)
+                    self._scroll_ai_chat_end()
+                elif itype == "tool_call_output_item":
+                    tname = getattr(item, "tool_name", getattr(item, "name", "tool"))
+                    output = getattr(item, "output", "")
+                    out_display = output if isinstance(output, str) else str(output)
+                    if len(out_display) > 4000:
+                        out_display = out_display[:4000] + "\n… (truncated)"
+                    msg = f"Tool output from {tname}:\n\n```\n{out_display}\n```"
+                    def _tool_output():
+                        try:
+                            self._append_chat_message(role="system", content=msg)
+                        except Exception:
+                            pass
+                    self.call_after_refresh(_tool_output)
+                    self._scroll_ai_chat_end()
+                elif itype == "handoff_call_item":
+                    target = getattr(item, "target_agent_name", getattr(item, "target", "unknown"))
+                    def _handoff_req():
+                        try:
+                            self._append_chat_message(role="system", content=f"Handoff requested -> {target}")
+                        except Exception:
+                            pass
+                    self.call_after_refresh(_handoff_req)
+                    self._scroll_ai_chat_end()
+                elif itype == "handoff_output_item":
+                    src = getattr(item, "source_agent_name", getattr(item, "source", "source"))
+                    tgt = getattr(item, "target_agent_name", getattr(item, "target", "target"))
+                    def _handoff_done():
+                        try:
+                            self._append_chat_message(role="system", content=f"Handoff completed: {src} -> {tgt}")
+                        except Exception:
+                            pass
+                    self.call_after_refresh(_handoff_done)
+                    self._scroll_ai_chat_end()
+        except Exception:
+            # Swallow streaming UI errors to avoid breaking the run loop
+            pass
 
-            # Start resizing
-            self.resizing = True
-            self.start_x = event.screen_x
-
-            # Capture the mouse to receive events outside the gutter
-            self.capture_mouse()
-
-            # Set the cursor to indicate resizing
-            event.prevent_default()
-
-    async def on_mouse_up(self, event) -> None:
-        """Handle mouse up events to end panel resizing"""
-        if self.resizing:
-            self.resizing = False
-            self.resizing_panel = None
-
-    async def on_mouse_move(self, event) -> None:
-        """Handle mouse move events for panel resizing"""
-        if not self.resizing or not self.resizing_panel:
-            return
-
-        # Calculate movement
-        delta_x = event.screen_x - self.start_x
-        if delta_x == 0:
-            return
-
-        # Convert to percentage of total width based on app width
-        app_width = self.size.width
-        delta_percent = (delta_x / app_width) * 100
-
-        # Update panel widths with constraints
-        if self.resizing_panel == "sidebar":
-            # Resizing sidebar affects editor width
-            new_sidebar_width = self.current_widths["sidebar"] + delta_percent
-            new_editor_width = self.current_widths["editor-container"] - delta_percent
-
-            # Apply constraints
-            if 10 <= new_sidebar_width <= 40 and 30 <= new_editor_width <= 80:
-                self.current_widths["sidebar"] = new_sidebar_width
-                self.current_widths["editor-container"] = new_editor_width
-
-                # Apply new widths
-                sidebar = self.query_one("#sidebar")
-                editor = self.query_one("#editor-container")
-                sidebar.styles.width = f"{new_sidebar_width}%"
-                editor.styles.width = f"{new_editor_width}%"
-
-        elif self.resizing_panel == "editor-container":
-            # Resizing editor affects AI panel width
-            new_editor_width = self.current_widths["editor-container"] + delta_percent
-            new_ai_width = self.current_widths["ai-panel"] - delta_percent
-
-            # Apply constraints
-            if 30 <= new_editor_width <= 80 and 10 <= new_ai_width <= 40:
-                self.current_widths["editor-container"] = new_editor_width
-                self.current_widths["ai-panel"] = new_ai_width
-
-                # Apply new widths
-                editor = self.query_one("#editor-container")
-                ai_panel = self.query_one("#ai-panel")
-                editor.styles.width = f"{new_editor_width}%"
-                ai_panel.styles.width = f"{new_ai_width}%"
-
-        # Update start position for next movement
-        self.start_x = event.screen_x
+    # Removed duplicate mouse handlers below; we already delegate to
+    # ResizablePanelsMixin via earlier on_mouse_* methods.
 
     def _check_for_code_suggestions(self, response):
         """

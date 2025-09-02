@@ -24,6 +24,7 @@ class ResizablePanelsMixin:
         self.resizing = False
         self.resizing_panel = None
         self.start_x = 0
+        self._resizing_widget = None
         self.current_widths = {
             "sidebar": 20,           # Default sidebar width 20%
             "editor-container": 60,  # Default editor width 60%
@@ -46,35 +47,50 @@ class ResizablePanelsMixin:
     
     async def handle_gutter_mouse_down(self, event: MouseDown) -> None:
         """Handle mouse down events for gutter resizing"""
-        # Check if we clicked on a gutter element
-        target = self.get_widget_at(event.screen_x, event.screen_y)
-        
-        if target and isinstance(target, Static) and target.has_class("gutter"):
-            # Find the adjacent panels for this gutter
-            gutter_idx = list(self.query(".gutter")).index(target)
-            
-            if gutter_idx == 0:
-                # First gutter - between sidebar and editor
-                self.resizing_panel = "sidebar"
-            elif gutter_idx == 1:
-                # Second gutter - between editor and AI panel
-                self.resizing_panel = "editor-container"
-            
-            # Start resizing
-            self.resizing = True
-            self.start_x = event.screen_x
-            
-            # Capture the mouse to receive events outside the gutter
-            self.capture_mouse()
+        # Hit-test specifically against gutter widgets to avoid ambiguity
+        gutters = list(self.query(".gutter"))
+        target = None
+        target_idx = -1
+        for idx, g in enumerate(gutters):
+            try:
+                region = g.region
+                if region and region.contains(event.screen_x, event.screen_y):
+                    target = g
+                    target_idx = idx
+                    break
+            except Exception:
+                continue
+
+        if target is not None:
+            # Determine which panel to resize based on which gutter was hit
+            if target_idx == 0:
+                self.resizing_panel = "sidebar"  # between sidebar and editor
+            elif target_idx == 1:
+                self.resizing_panel = "editor-container"  # between editor and ai-panel
+            else:
+                self.resizing_panel = None
+
+            if self.resizing_panel:
+                self.resizing = True
+                self.start_x = event.screen_x
+                # Capture mouse on the gutter widget so we continue to receive moves
+                try:
+                    target.capture_mouse()
+                    self._resizing_widget = target
+                except Exception:
+                    self._resizing_widget = None
     
     async def handle_gutter_mouse_up(self, event: MouseUp) -> None:
         """Handle mouse up events to stop resizing"""
         if self.resizing:
             self.resizing = False
             self.resizing_panel = None
-            
-            # Release the mouse capture
-            self.release_mouse()
+            # Release the mouse capture on the gutter if we have it
+            try:
+                if self._resizing_widget is not None:
+                    self._resizing_widget.release_mouse()
+            finally:
+                self._resizing_widget = None
     
     async def handle_gutter_mouse_move(self, event: MouseMove) -> None:
         """Handle mouse move events for panel resizing"""
@@ -174,6 +190,8 @@ PANEL_CSS = """
     width: 20%;
     min-width: 15%;
     max-width: 40%;
+    height: 100%;
+    min-height: 0; /* allow inner scroll containers to size correctly */
 }
 
 /* Gutter styles for resizing */

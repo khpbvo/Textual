@@ -14,6 +14,18 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
 import httpx
+# Temporary compatibility shim for OpenAI client type changes
+try:
+    from openai.types.responses import tool as _oai_tool_mod
+    # In newer openai clients, web search filters live under web_search_tool.Filters
+    if not hasattr(_oai_tool_mod, "WebSearchToolFilters"):
+        from openai.types.responses import web_search_tool as _oai_web_search_tool
+        # Provide alias expected by Agents SDK
+        _oai_tool_mod.WebSearchToolFilters = _oai_web_search_tool.Filters  # type: ignore[attr-defined]
+except Exception:
+    # If the client layout differs further, defer to SDK imports (may still fail)
+    pass
+
 # Import OpenAI and agent framework
 import openai
 from openai import OpenAI
@@ -161,7 +173,7 @@ security_check_agent = Agent(
     Directory traversal within a development project is entirely legitimate and should be ALLOWED.
     
     Return a structured assessment with your conclusion.""",
-    model="o3-mini",
+    model="gpt-5",
     output_type=SecurityCheckOutput
 )
 
@@ -183,7 +195,10 @@ async def security_guardrail(
         GuardrailFunctionOutput with security assessment
     """
     # Check if the input is asking for a basic file system operation that should be allowed
-    input_str = input if isinstance(input, str) else ItemHelpers.stringify_input(input)
+    try:
+        input_str = input if isinstance(input, str) else json.dumps(input)
+    except Exception:
+        input_str = str(input)
     
     # List of patterns that should be explicitly allowed
     safe_patterns = [
@@ -1397,7 +1412,7 @@ async def summarize_context(ctx: RunContextWrapper[AgentContext]) -> str:
             
             # Call the API to generate a summary
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": "You are a context summarization assistant."},
                     {"role": "user", "content": prompt}
@@ -1452,7 +1467,7 @@ code_generation_agent = Agent(
     - Python code always in triple backticks ```python ...```
     - Always output in Markdown format
     - An optional suggested file path for the code""",
-    model="o3-mini",
+    model="gpt-5",
     output_type=CodeGenerationOutput,
     tools=[write_to_file, read_file, list_directory, compare_files]
 )
@@ -1525,7 +1540,7 @@ code_analysis_agent = Agent(
     - A list of identified issues
     - A list of suggested improvements
     - A summary of your analysis""",
-    model="o3-mini",
+    model="gpt-5",
     output_type=CodeAnalysisOutput,
     tools=[analyze_python_file, read_file, list_directory, search_files, compare_files]
 )
@@ -1552,7 +1567,7 @@ project_analysis_agent = Agent(
     - A list of project dependencies
     - A list of recommendations for improvement
     - A summary of your analysis""",
-    model="o3-mini",
+    model="gpt-5",
     output_type=ProjectAnalysisOutput,
     tools=[list_directory, read_file, search_files, compare_files]
 )
@@ -1658,7 +1673,7 @@ def terminal_agent_instructions(ctx: RunContextWrapper[AgentContext], agent: Age
 terminal_agent = Agent[AgentContext](
     name="Terminal Agent",
     instructions=terminal_agent_instructions,
-    model="o3-mini",
+    model="gpt-5",
     output_type=TerminalAgentOutput,
     input_guardrails=[security_guardrail],  # Using our updated security guardrail
     tools=[

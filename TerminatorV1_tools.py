@@ -16,7 +16,10 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union, Tuple, Set, Callable
 from dataclasses import dataclass
-import websockets
+try:
+    import websockets  # type: ignore
+except Exception:  # pragma: no cover
+    websockets = None  # type: ignore
 
 # File System Utilities
 class FileSystem:

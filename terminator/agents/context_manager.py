@@ -289,7 +289,7 @@ async def summarize_context(ctx: RunContextWrapper[AgentContext]) -> str:
             
             # Call the API to generate a summary
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": "You are a context summarization assistant."},
                     {"role": "user", "content": prompt}

@@ -7,7 +7,10 @@ import uuid
 import time
 import asyncio
 import logging
-import websockets
+try:
+    import websockets  # type: ignore
+except Exception:  # pragma: no cover
+    websockets = None  # type: ignore
 from typing import Dict, List, Any, Optional, Set, Tuple, Union, Callable, Awaitable
 
 from .session import (
