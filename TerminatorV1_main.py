@@ -2052,21 +2052,20 @@ class TerminatorApp(App, ResizablePanelsMixin):
         }
         .chat-bubble {
             padding: 1;
-            border-radius: 1;
             text-wrap: wrap;
             overflow-x: auto; /* code blocks can scroll horizontally */
         }
         /* Role-specific coloring using classes applied directly on .chat-msg */
-        .chat-msg.user .chat-bubble {
+        .chat-msg.chat-user .chat-bubble {
             background: $accent-darken-2;
             color: $text;
         }
-        .chat-msg.assistant .chat-bubble {
+        .chat-msg.chat-assistant .chat-bubble {
             background: $surface-darken-2;
             color: $text;
             border: solid $panel-darken-1;
         }
-        .chat-msg.system .chat-bubble {
+        .chat-msg.chat-system .chat-bubble {
             background: $panel-darken-2;
             color: $text-muted;
             text-style: italic;
@@ -2293,8 +2292,9 @@ class TerminatorApp(App, ResizablePanelsMixin):
             # Actual bubble with Markdown content
             bubble = Vertical(classes="chat-bubble")
             md = Markdown(content or "")
-            bubble.mount(md)
+            # Ensure parent is mounted before mounting its children
             msg.mount(bubble)
+            bubble.mount(md)
 
             self._scroll_ai_chat_end()
 
