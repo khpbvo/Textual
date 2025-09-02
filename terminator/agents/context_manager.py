@@ -187,18 +187,44 @@ class AgentContextManager:
                 async def apply_changes_callback(content: str) -> None:
                     """Callback when changes are applied from diff view"""
                     try:
-                        # Apply the changes to the file
-                        with open(file_path, "w", encoding="utf-8") as f:
-                            f.write(content)
+                        # Build patch text
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as f:
+                                orig = f.read()
+                        except FileNotFoundError:
+                            orig = ""
+
+                        def _lines(prefix: str, text: str) -> str:
+                            return "\n".join(prefix + line for line in text.splitlines())
+
+                        patch_text = (
+                            "*** Begin Patch\n"
+                            f"*** Update File: {file_path}\n"
+                            "@@\n"
+                            f"{_lines('-', orig)}\n"
+                            f"{_lines('+', content)}\n"
+                            "*** End Patch\n"
+                        )
+
+                        # Show patch preview via the app and apply using the app helper
+                        if hasattr(self.app, "show_patch_preview") and hasattr(self.app, "_apply_patch_text"):
+                            async def _apply_now():
+                                await self.app._apply_patch_text(patch_text)
+                                if hasattr(self.app, "refresh_editor_content"):
+                                    await self.app.refresh_editor_content(file_path)
+                                if hasattr(self.app, "notify"):
+                                    self.app.notify(f"Changes applied to {file_path}", severity="success")
+
+                            await self.app.show_patch_preview(patch_text, _apply_now)
+                        else:
+                            # Fallback: apply directly
+                            from terminator.utils import apply_patch as ap
+                            ap.process_patch(patch_text, ap.open_file, ap.write_file, ap.remove_file)
+                            if hasattr(self.app, "refresh_editor_content"):
+                                await self.app.refresh_editor_content(file_path)
+                            if hasattr(self.app, "notify"):
+                                self.app.notify(f"Changes applied to {file_path}", severity="success")
                         logger.info(f"Applied changes to file: {file_path}")
-                        
-                        # Update the editor if it's the current file
-                        if hasattr(self.app, "update_editor_content"):
-                            await self.app.update_editor_content(file_path, content)
-                            
-                        # Notify the user
-                        if hasattr(self.app, "notify"):
-                            self.app.notify(f"Changes applied to {file_path}", severity="success")
                     except Exception as e:
                         logger.error(f"Error applying changes to {file_path}: {str(e)}", exc_info=True)
                         if hasattr(self.app, "notify"):

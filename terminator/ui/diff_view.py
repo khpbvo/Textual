@@ -133,31 +133,38 @@ class DiffViewScreen(ModalScreen):
         """Create the diff view layout"""
         with Container(id="diff-view-container"):
             yield Label(self.screen_title, id="diff-title")
-            
-            if self.show_unified:
-                # Unified diff view
-                yield TextArea(self.unified_diff, language="diff", id="unified-diff", read_only=True)
-            else:
-                # Side-by-side diff view
-                with Horizontal(id="diff-split-view"):
-                    with Container(id="diff-original-container"):
-                        yield Label(self.original_title, id="diff-original-title")
-                        yield TextArea(
-                            self.original_content,
-                            language=self.language,
-                            id="diff-original-content",
-                            read_only=True
-                        )
-                    
-                    with Container(id="diff-modified-container"):
-                        yield Label(self.modified_title, id="diff-modified-title")
-                        yield TextArea(
-                            self.modified_content,
-                            language=self.language,
-                            id="diff-modified-content",
-                            read_only=True
-                        )
-            
+
+            # Always build both views; toggle visibility via class
+            unified_classes = "" if self.show_unified else "hidden"
+            split_classes = "hidden" if self.show_unified else ""
+
+            yield TextArea(
+                self.unified_diff,
+                language=None,
+                id="unified-diff",
+                read_only=True,
+                classes=unified_classes,
+            )
+
+            with Horizontal(id="diff-split-view", classes=split_classes):
+                with Container(id="diff-original-container"):
+                    yield Label(self.original_title, id="diff-original-title")
+                    yield TextArea(
+                        self.original_content,
+                        language=self.language,
+                        id="diff-original-content",
+                        read_only=True,
+                    )
+
+                with Container(id="diff-modified-container"):
+                    yield Label(self.modified_title, id="diff-modified-title")
+                    yield TextArea(
+                        self.modified_content,
+                        language=self.language,
+                        id="diff-modified-content",
+                        read_only=True,
+                    )
+
             with Horizontal(id="diff-buttons"):
                 yield Button("Apply Changes", id="apply-diff", variant="success")
                 yield Button("Toggle View", id="toggle-unified-view")
@@ -169,10 +176,19 @@ class DiffViewScreen(ModalScreen):
         self._highlight_changes()
         
     def watch_show_unified(self, show_unified: bool) -> None:
-        """React to changes in the show_unified state"""
-        self.remove()
-        self.compose()
-        self.add_key_binding("escape", "close")
+        """React to changes in the show_unified state by toggling visibility"""
+        try:
+            unified = self.query_one("#unified-diff", TextArea)
+            split = self.query_one("#diff-split-view", Horizontal)
+            if show_unified:
+                split.add_class("hidden")
+                unified.remove_class("hidden")
+            else:
+                unified.add_class("hidden")
+                split.remove_class("hidden")
+        except Exception:
+            # Fall back to full refresh if needed
+            self.refresh(repaint=True)
     
     def action_close(self) -> None:
         """Close the diff view"""

@@ -1820,19 +1820,25 @@ async def run_agent_query(
                         await stream_callback(event)
                         
                 # Return the final result
-                if hasattr(result, 'final_output'):
-                    logger.info("Successfully completed streaming agent query")
-                    return {
-                        "response": result.final_output.response,
-                        "files_accessed": result.final_output.files_accessed,
-                        "commands_executed": result.final_output.commands_executed
-                    }
-                else:
-                    logger.error("No response from streaming agent query")
+                final = getattr(result, 'final_output', None)
+                if final is None:
+                    logger.error("No final_output from streaming agent query")
                     return {
                         "error": "No response from agent",
                         "response": "I couldn't process that request. No response was generated."
                     }
+                # Coerce final output into a string response and optional metadata
+                response_text = getattr(final, 'response', None)
+                if response_text is None:
+                    response_text = str(final)
+                files_accessed = getattr(final, 'files_accessed', []) or []
+                commands_executed = getattr(final, 'commands_executed', []) or []
+                logger.info("Successfully completed streaming agent query")
+                return {
+                    "response": response_text,
+                    "files_accessed": files_accessed,
+                    "commands_executed": commands_executed,
+                }
             except Exception as stream_error:
                 logger.error(f"Error in streaming agent query: {str(stream_error)}", exc_info=True)
                 return {
@@ -1851,12 +1857,18 @@ async def run_agent_query(
                 )
                 
                 # Return the result
-                if hasattr(result, 'final_output'):
+                final = getattr(result, 'final_output', None)
+                if final is not None:
+                    response_text = getattr(final, 'response', None)
+                    if response_text is None:
+                        response_text = str(final)
+                    files_accessed = getattr(final, 'files_accessed', []) or []
+                    commands_executed = getattr(final, 'commands_executed', []) or []
                     logger.info("Successfully completed agent query")
                     return {
-                        "response": result.final_output.response,
-                        "files_accessed": result.final_output.files_accessed,
-                        "commands_executed": result.final_output.commands_executed
+                        "response": response_text,
+                        "files_accessed": files_accessed,
+                        "commands_executed": commands_executed,
                     }
                 else:
                     logger.error("No response from agent query")
@@ -1926,12 +1938,16 @@ def initialize_agent_system():
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-            logger.setLevel(logging.WARNING)
-            
-            # Also add a file handler for persistent logs
-            file_handler = logging.FileHandler("terminator_agent.log")
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
+            logger.setLevel(logging.INFO)
+            # Try to add a file handler if one not present
+            has_agent_file = any(
+                isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '').endswith('terminator_agent.log')
+                for h in logger.handlers
+            )
+            if not has_agent_file:
+                file_handler = logging.FileHandler("terminator_agent.log")
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
             logging.getLogger("httpx").setLevel(logging.WARNING)
             logging.getLogger("openai").setLevel(logging.WARNING)
             logging.getLogger("openai._base_client").setLevel(logging.WARNING)

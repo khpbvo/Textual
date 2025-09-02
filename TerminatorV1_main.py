@@ -97,6 +97,52 @@ class CommitDialog(ModalScreen):
             await self.action_cancel()
 
 
+class PatchPreviewDialog(ModalScreen):
+    """Preview a patch before applying it using the utils/apply_patch tool"""
+
+    def __init__(self, patch_text: str, on_apply: Callable[[], Awaitable[None]]):
+        super().__init__()
+        self.patch_text = patch_text
+        self.on_apply = on_apply
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "apply", "Apply"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="patch-preview-dialog"):
+            yield Label("Patch Preview", classes="title")
+            ta = yield TextArea(
+                language="diff",
+                read_only=True,
+                id="patch-preview-text",
+            )
+            ta.text = self.patch_text
+            with Horizontal():
+                yield Button("Cancel", id="cancel-patch", variant="error")
+                yield Button("Apply Patch", id="apply-patch", variant="success")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel-patch":
+            self.app.pop_screen()
+        elif event.button.id == "apply-patch":
+            try:
+                await self.on_apply()
+            finally:
+                self.app.pop_screen()
+
+    async def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+    async def action_apply(self) -> None:
+        try:
+            logging.info("PatchPreviewDialog: Apply triggered")
+            await self.on_apply()
+        finally:
+            self.app.pop_screen()
+
+
 # Code Analysis Dialog
 class CodeAnalysisDialog(ModalScreen):
     """Code analysis results screen"""
@@ -2530,6 +2576,47 @@ class TerminatorApp(App, ResizablePanelsMixin):
 
         return language_map.get(ext, "python")
 
+    async def _apply_patch_text(self, patch_text: str) -> None:
+        """Apply a patch using the utils.apply_patch tool with error handling and logging"""
+        try:
+            from terminator.utils import apply_patch as ap
+            # Preview parse to compute fuzz and files involved
+            paths = ap.identify_files_needed(patch_text)
+            orig = ap.load_files(paths, ap.open_file)
+            patch, fuzz = ap.text_to_patch(patch_text, orig)
+            commit = ap.patch_to_commit(patch, orig)
+            ap.apply_commit(commit, ap.write_file, ap.remove_file)
+
+            self.notify(
+                f"Patch applied successfully (fuzz={fuzz}, files={len(paths)})",
+                severity="success",
+            )
+            logging.info(f"Applied patch with fuzz={fuzz}, files={paths}")
+        except Exception as ex:
+            # Surface parsing or application errors clearly
+            err = str(ex)
+            logging.error(f"Patch application error: {err}", exc_info=True)
+            self.notify(f"Patch failed: {err}", severity="error")
+
+    async def show_patch_preview(self, patch_text: str, on_apply: Callable[[], Awaitable[None]]) -> None:
+        """Push a patch preview screen and apply on confirmation"""
+        await self.push_screen(PatchPreviewDialog(patch_text, on_apply))
+
+    async def refresh_editor_content(self, file_path: str) -> None:
+        """If the given file is open, reload its content into the editor"""
+        try:
+            if getattr(self, "current_file", None) != file_path:
+                return
+            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+                content = await f.read()
+            editor = self.query_one("#editor-primary") if self.active_editor == "primary" else self.query_one("#editor-secondary")
+            if hasattr(editor, "load_text"):
+                editor.load_text(content)
+            else:
+                editor.text = content
+        except Exception as ex:
+            logging.error(f"Failed to refresh editor for {file_path}: {ex}", exc_info=True)
+
     @work(thread=True)
     async def apply_diff_changes(self, new_content: str) -> None:
         """
@@ -2543,26 +2630,40 @@ class TerminatorApp(App, ResizablePanelsMixin):
             return
     
         try:
-            # Get the active editor
-            if self.active_editor == "primary":
-                editor = self.query_one("#editor-primary")
-            else:
-                editor = self.query_one("#editor-secondary")
-    
-            # Update the editor content
-            if hasattr(editor, "load_text"):
-                editor.load_text(new_content)
-            else:
-                editor.text = new_content
-    
-            # Save the changes to the file asynchronously
-            async with aiofiles.open(self.current_file, "w", encoding="utf-8") as file:
-                await file.write(new_content)
-    
-            self.notify(
-                f"Changes applied and saved to {os.path.basename(self.current_file)}",
-                severity="success",
+            # Read current on-disk content to build a patch
+            try:
+                async with aiofiles.open(self.current_file, "r", encoding="utf-8") as f:
+                    original_content = await f.read()
+            except FileNotFoundError:
+                original_content = ""
+
+            # Build apply_patch pseudo-diff to update the file in one section
+            def _lines(prefix: str, text: str) -> str:
+                return "\n".join(prefix + line for line in text.splitlines())
+
+            patch_text = (
+                "*** Begin Patch\n"
+                f"*** Update File: {self.current_file}\n"
+                "@@\n"
+                f"{_lines('-', original_content)}\n"
+                f"{_lines('+', new_content)}\n"
+                "*** End Patch\n"
             )
+
+            # Show a preview dialog and apply on confirmation
+            async def _apply_now() -> None:
+                await self._apply_patch_text(patch_text)
+                # Update the editor content to reflect the new state on disk
+                if self.active_editor == "primary":
+                    editor = self.query_one("#editor-primary")
+                else:
+                    editor = self.query_one("#editor-secondary")
+                if hasattr(editor, "load_text"):
+                    editor.load_text(new_content)
+                else:
+                    editor.text = new_content
+
+            await self.push_screen(PatchPreviewDialog(patch_text, _apply_now))
     
             # Update git status if applicable
             if hasattr(self, "git_repository") and self.git_repository:
@@ -2681,12 +2782,8 @@ class TerminatorApp(App, ResizablePanelsMixin):
             "remote_path": None,
         }
 
-        # Initialize logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[logging.FileHandler("terminator.log"), logging.StreamHandler()],
-        )
+        # Logging configured in __main__; avoid reconfiguring here
+        logging.getLogger(__name__).info("App mounted; initializing subsystems")
 
         # Initialize the agent system
         self.notify("Initializing AI agents...")
@@ -3189,7 +3286,9 @@ class TerminatorApp(App, ResizablePanelsMixin):
             # Prepare streaming state and assistant bubble
             self._stream_buffer = ""
             self._stream_header = ""  # Header no longer needed with chat bubbles
-            self._append_chat_message(role="assistant", content="", streaming=True)
+            self._stream_msg_md = self._append_chat_message(
+                role="assistant", content="", streaming=True
+            )
         except Exception as e:
             self.notify(f"Error preparing AI chat: {str(e)}", severity="error")
 
@@ -4370,5 +4469,13 @@ class TerminatorApp(App, ResizablePanelsMixin):
 
 
 if __name__ == "__main__":
+    # Configure logging early for all modules
+    try:
+        from terminator.utils.logging_setup import configure_logging
+        configure_logging(level=logging.INFO)
+    except Exception as ex:
+        logging.basicConfig(level=logging.INFO)
+        logging.getLogger(__name__).warning(f"Fallback logging config due to: {ex}")
+
     app = TerminatorApp()
     app.run()
