@@ -3,15 +3,11 @@ TerminatorV1 Agents - Agent integration for the Terminator IDE
 Provides OpenAI agent-based code assistance, analysis, and generation
 """
 import os
-import sys
-import asyncio
 import logging
 import json
 import time
 import re
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union, Tuple
-from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 import httpx
 # Temporary compatibility shim for OpenAI client type changes
@@ -35,20 +31,14 @@ from agents import (
     Runner, 
     function_tool, 
     RunContextWrapper, 
-    trace, 
     handoff,
     set_default_openai_key,
     input_guardrail,
-    output_guardrail,
     GuardrailFunctionOutput,
     InputGuardrailTripwireTriggered,
-    OutputGuardrailTripwireTriggered,
     TResponseInputItem,
     ItemHelpers,
     RunConfig,
-    MaxTurnsExceeded,
-    ModelBehaviorError,
-    AgentsException
 )
 
 # Import tools for the agents to use

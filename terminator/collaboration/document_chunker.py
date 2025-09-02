@@ -5,7 +5,7 @@ Document Chunker Module - Provides chunking for large documents in collaborative
 import hashlib
 import time
 import logging
-from typing import Dict, List, Set, Tuple, Optional, Any, Union
+from typing import Dict, List, Tuple, Optional
 
 from .operational_transform import Operation, InsertOperation, DeleteOperation, apply_operation
 

@@ -11,10 +11,8 @@ import aiofiles
 import logging
 import time
 import json
-import subprocess
-from pathlib import Path
 from typing import Optional, Dict, Any, List, Callable, Awaitable
-from terminator.ui.panels import ResizablePanelsMixin, PANEL_CSS
+from terminator.ui.panels import ResizablePanelsMixin
 # Textual imports
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
@@ -30,19 +28,16 @@ from textual.widgets import (
     DirectoryTree,
     Label,
     Markdown,
-    LoadingIndicator,
+    # LoadingIndicator,
     TabbedContent,
     TabPane,
 )
-from textual.widgets.tree import TreeNode
 from textual.screen import Screen, ModalScreen
-from textual.suggester import SuggestFromList
 from textual.widgets import DataTable
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual import events, work
 from textual.message import Message
-from textual.timer import Timer
 
 
 # For older Textual versions
@@ -51,15 +46,7 @@ import re
 import difflib
 # Import agent and tools modules
 from TerminatorV1_agents import initialize_agent_system, run_agent_query, AgentContext
-from TerminatorV1_tools import (
-    FileSystem,
-    CodeAnalyzer,
-    GitManager,
-    PythonRunner,
-    PythonDebugger,
-    CollaborationManager,
-    CollaborationSession,
-)
+from TerminatorV1_tools import CodeAnalyzer, GitManager, PythonDebugger
 
 
 # Git Commit Dialog Screen

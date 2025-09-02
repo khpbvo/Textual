@@ -1,19 +1,39 @@
-/Imacvenv
-/venv
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.code-workspace
 
-## python source code
-*.pyc
-
-# logs
-*.log
-# .md files
-*.md
-# .txt files
-*.txt
-# ds_store files
-*.DS_Store
-# __pycache__ folders
+# Python
 __pycache__/
-.DS_Store
-.DS_Store
-.DS_Store
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+.coverage
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Virtual envs
+venv/
+.venv/
+
+# Logs and artifacts
+*.log
+terminator.log
+terminator_agent.log
+test_output.txt
+
+# Generated
+coverage.xml
+pytest.xml
+
+# Local data
+.env
+env.local
+
+/Imacvenv

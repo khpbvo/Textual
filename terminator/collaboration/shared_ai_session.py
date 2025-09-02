@@ -3,18 +3,11 @@ Shared AI Session Module - Enables multiple users to interact with the same AI a
 """
 
 import time
-import json
-import asyncio
 import logging
 import uuid
-from typing import Dict, List, Any, Optional, Set, Tuple, Union, Callable
-from typing import Dict, List, Any, Optional, Set, Tuple, Union, Callable, Awaitable
+from typing import Dict, List, Any, Optional, Set, Callable, Awaitable
 
-from .session import (
-    SessionManager,
-    CollaborationSession,
-    User
-)
+from .session import SessionManager
 from ..utils.performance import (
     PerformanceOptimizer,
     TimingProfiler

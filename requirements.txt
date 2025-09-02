@@ -1,0 +1,31 @@
+# Core dependencies
+textual
+rich
+textual[syntax]
+# Pin OpenAI client to version compatible with Agents SDK hosted tools
+openai>=1.58.0
+tree-sitter-languages
+
+# Agent system
+openai-agents>=0.2.10
+
+# Async utilities
+aiofiles
+websockets
+
+# Code analysis tools
+pylint
+
+# Git integration
+gitpython
+
+# Debugging utilities
+pydantic
+dataclasses
+typing-extensions
+
+# Development tools
+pytest
+black
+ruff
+pyright

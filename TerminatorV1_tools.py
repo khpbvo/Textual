@@ -11,11 +11,8 @@ import subprocess
 import difflib
 import tempfile
 import asyncio
-import uuid
-import time
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union, Tuple, Set, Callable
-from dataclasses import dataclass
+from typing import Dict, Any, Optional, Tuple
+import logging
 try:
     import websockets  # type: ignore
 except Exception:  # pragma: no cover
@@ -194,7 +191,7 @@ class CodeAnalyzer:
             with tempfile.NamedTemporaryFile(suffix='.py', delete=False) as temp:
                 temp_path = temp.name
                 temp.write(code.encode('utf-8'))
-            
+
             try:
                 result = subprocess.run(
                     ['pylint', '--output-format=json', '--exit-zero', temp_path],
@@ -202,7 +199,7 @@ class CodeAnalyzer:
                     text=True,
                     timeout=5
                 )
-                
+
                 if result.stdout:
                     try:
                         pylint_issues = json.loads(result.stdout)
@@ -214,13 +211,13 @@ class CodeAnalyzer:
                             })
                     except json.JSONDecodeError:
                         pass
-                        
+
             except (subprocess.TimeoutExpired, subprocess.SubprocessError):
                 pass
-                
+
             finally:
                 os.unlink(temp_path)
-                
+
         except Exception:
             pass
         
@@ -298,7 +295,6 @@ class CodeAnalyzer:
         """Analyze Python code asynchronously"""
         try:
         # Convert synchronous method to async using run_in_executor
-            import asyncio
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, CodeAnalyzer.analyze_python_code, code)
         except Exception as e:
@@ -310,7 +306,6 @@ class CodeAnalyzer:
         """Count code lines asynchronously"""
         try:
             # Convert synchronous method to async using run_in_executor
-            import asyncio
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, CodeAnalyzer.count_code_lines, code)
         except Exception as e:
@@ -321,7 +316,6 @@ class CodeAnalyzer:
     async def create_diff_async(original_content: str, modified_content: str) -> str:
         """Create a unified diff asynchronously"""
         try:
-            import asyncio
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, CodeAnalyzer.create_diff, original_content, modified_content)
         except Exception as e:
@@ -730,13 +724,6 @@ class PythonDebugger:
                 return False, {"error": f"File not found: {file_path}"}
                 
             # Setup debugging session using pdb
-            import pdb
-            import sys
-            import io
-            import threading
-            import importlib.util
-            from types import ModuleType
-            
             # Create a debug info object
             debug_session = {
                 "file_path": file_path,
@@ -973,13 +960,4 @@ class PythonRunner:
             }
 
 
-# Real-time Collaboration Manager
-# Using enhanced implementation from terminator/collaboration module
-from terminator.collaboration.adapter import CollaborationManager, CollaborationSession
-
-# These classes provide:
-# - Operational Transform (OT) for conflict-free editing
-# - Document chunking for large files (>1MB)
-# - Connection pooling for better performance
-# - Reliable message delivery with acknowledgments
-# - Performance optimizations for multiple users
+# Collaboration classes are imported where needed to avoid heavy imports here.

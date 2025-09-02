@@ -11,24 +11,20 @@ try:
     import websockets  # type: ignore
 except Exception:  # pragma: no cover
     websockets = None  # type: ignore
-from typing import Dict, List, Any, Optional, Set, Tuple, Union, Callable, Awaitable
+from typing import Dict, List, Any
 
 from .session import (
     SessionManager,
     CollaborationSession as EnhancedCollaborationSession,
-    User
 )
 from .shared_ai_session import (
     SharedAIManager,
     SharedAICollaborationIntegration,
-    SharedAIContext
 )
 from .operational_transform import (
-    Operation,
     InsertOperation,
     DeleteOperation
 )
-from .connection_pool import ConnectionPoolManager
 from ..utils.performance import TimingProfiler
 
 logger = logging.getLogger(__name__)

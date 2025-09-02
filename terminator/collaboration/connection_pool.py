@@ -6,8 +6,7 @@ import asyncio
 import time
 import logging
 import uuid
-from typing import Dict, List, Set, Optional, Any, Callable, Awaitable, Tuple, Union
-from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 

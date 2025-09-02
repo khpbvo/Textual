@@ -4,13 +4,10 @@ Base Framework Module - Provides base classes for framework-specific tooling
 
 import os
 import logging
-import json
-import asyncio
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Set, Tuple, Callable
+from typing import Dict, List, Any, Optional, Callable
 
-from textual.app import App, ComposeResult
-from textual.widgets import Button, Label, Container, ScrollableContainer
+from textual.app import App
 
 logger = logging.getLogger(__name__)
 
@@ -243,11 +240,8 @@ class FrameworkDetector:
         if os.path.exists(package_json_path):
             try:
                 with open(package_json_path, "r") as f:
-                    package_data = json.load(f)
-                    dependencies = package_data.get("dependencies", {})
-                    dev_dependencies = package_data.get("devDependencies", {})
-                    
-                    if "react" in dependencies or "react" in dev_dependencies:
+                    content = f.read().lower()
+                    if "\"react\"" in content:
                         return True
             except Exception as e:
                 logger.error(f"Error reading package.json: {str(e)}", exc_info=True)
